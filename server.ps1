@@ -703,7 +703,8 @@ $WorkerScript = {
                 $paperTitle = [string]$State.Active.Title
                 if (-not $paperTitle) { $paperTitle = '(제목 미상)' }
                 $prompt = $State.TranslateTpl.Replace('{{PAPER_TITLE}}', $paperTitle).Replace('{{TEXT}}', $text)
-                $res = Invoke-Claude $prompt 180
+                # translation quality matters more than latency here - pin opus
+                $res = Invoke-Claude $prompt 240 'opus' 'medium'
                 if ($res.ok) {
                     $State.Cache[$cacheKey] = $res.text
                     Send-Json $ctx @{ ok = $true; text = $res.text; cost = $res.cost }
