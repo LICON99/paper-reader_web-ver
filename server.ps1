@@ -483,6 +483,7 @@ $State = [hashtable]::Synchronized(@{
         Id = $entry.Id; Title = $entry.Title; PdfPath = $entry.PdfPath; Text = $paperText
     })
     Sessions     = [hashtable]::Synchronized(@{})
+    Notes        = [hashtable]::Synchronized(@{})
     Cache        = [hashtable]::Synchronized(@{})
     LogPath      = (Join-Path $Root 'server.log')
 })
@@ -699,6 +700,44 @@ $WorkerScript = {
             } catch { }
         }
         return @($items | Sort-Object { $_.updated } -Descending)
+    }
+
+    # --- notes: green memo / pink quote highlights, per paper ---------------
+    # data\papers\<id>\notes.json holds an array of
+    #   { id, type('memo'|'quote'), src, memo, question, sessionKey, created,
+    #     spans: [ { page, rects: [ {x,y,w,h} normalized 0..1 ] } ] }
+    function Get-NotesPath { param([string]$PaperId) Join-Path (Join-Path $State.PapersDir $PaperId) 'notes.json' }
+
+    function Get-Notes {
+        param([string]$PaperId)
+        $n = $State.Notes
+        [System.Threading.Monitor]::Enter($n.SyncRoot)
+        try {
+            if (-not $n.ContainsKey($PaperId)) {
+                $list = New-Object Collections.ArrayList
+                $file = Get-NotesPath $PaperId
+                if (Test-Path $file) {
+                    try {
+                        $j = [IO.File]::ReadAllText($file, [Text.Encoding]::UTF8) | ConvertFrom-Json
+                        foreach ($it in $j) { [void]$list.Add($it) }
+                    } catch { }
+                }
+                $n[$PaperId] = $list
+            }
+            # the comma stops PowerShell from unrolling the ArrayList
+            # (an empty one would otherwise come back as $null)
+            return ,$n[$PaperId]
+        } finally { [System.Threading.Monitor]::Exit($n.SyncRoot) }
+    }
+
+    function Write-Notes {
+        param([string]$PaperId)
+        # caller holds the lock
+        $list = $State.Notes[$PaperId]
+        try {
+            [IO.File]::WriteAllText((Get-NotesPath $PaperId),
+                (ConvertTo-Json @($list.ToArray()) -Depth 8 -Compress), [Text.Encoding]::UTF8)
+        } catch { }
     }
 
     # --- paper library helpers ----------------------------------------------
@@ -1019,6 +1058,67 @@ $WorkerScript = {
 
             if ($path -eq '/api/sessions' -and $method -eq 'GET') {
                 Send-Json $ctx @{ ok = $true; sessions = @(Get-SessionList) }
+                continue
+            }
+
+            if ($path -eq '/api/notes' -and $method -eq 'GET') {
+                $pid_ = [string]$req.QueryString['id']
+                if ($pid_ -notmatch '^[A-Za-z0-9_-]{1,64}$') {
+                    Send-Json $ctx @{ ok = $false; error = 'bad paper id' } 400
+                    continue
+                }
+                $list = Get-Notes $pid_
+                Send-Json $ctx @{ ok = $true; notes = @($list.ToArray()) }
+                continue
+            }
+
+            if ($path -eq '/api/notes/save' -and $method -eq 'POST') {
+                $body = Read-Body $ctx | ConvertFrom-Json
+                $pid_ = [string]$body.paperId
+                $note = $body.note
+                if ($pid_ -notmatch '^[A-Za-z0-9_-]{1,64}$' -or -not $note -or
+                    (@('memo', 'quote') -notcontains [string]$note.type) -or
+                    -not $note.spans -or @($note.spans).Count -eq 0 -or
+                    ([string]$note.memo).Length -gt 20000 -or ([string]$note.src).Length -gt 20000) {
+                    Send-Json $ctx @{ ok = $false; error = 'bad note' } 400
+                    continue
+                }
+                if (-not $note.id -or ([string]$note.id) -notmatch '^[A-Za-z0-9_-]{1,32}$') {
+                    $note | Add-Member -NotePropertyName id -NotePropertyValue ('n' + [Guid]::NewGuid().ToString('N').Substring(0, 12)) -Force
+                }
+                $n = $State.Notes
+                [System.Threading.Monitor]::Enter($n.SyncRoot)
+                try {
+                    $list = Get-Notes $pid_
+                    $idx = -1
+                    for ($i = 0; $i -lt $list.Count; $i++) {
+                        if ([string]$list[$i].id -eq [string]$note.id) { $idx = $i; break }
+                    }
+                    if ($idx -ge 0) { $list[$idx] = $note } else { [void]$list.Add($note) }
+                    Write-Notes $pid_
+                } finally { [System.Threading.Monitor]::Exit($n.SyncRoot) }
+                Send-Json $ctx @{ ok = $true; id = [string]$note.id }
+                continue
+            }
+
+            if ($path -eq '/api/notes/delete' -and $method -eq 'POST') {
+                $body = Read-Body $ctx | ConvertFrom-Json
+                $pid_ = [string]$body.paperId
+                $id   = [string]$body.id
+                if ($pid_ -notmatch '^[A-Za-z0-9_-]{1,64}$' -or $id -notmatch '^[A-Za-z0-9_-]{1,32}$') {
+                    Send-Json $ctx @{ ok = $false; error = 'bad request' } 400
+                    continue
+                }
+                $n = $State.Notes
+                [System.Threading.Monitor]::Enter($n.SyncRoot)
+                try {
+                    $list = Get-Notes $pid_
+                    for ($i = $list.Count - 1; $i -ge 0; $i--) {
+                        if ([string]$list[$i].id -eq $id) { $list.RemoveAt($i) }
+                    }
+                    Write-Notes $pid_
+                } finally { [System.Threading.Monitor]::Exit($n.SyncRoot) }
+                Send-Json $ctx @{ ok = $true }
                 continue
             }
 

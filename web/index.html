@@ -139,22 +139,62 @@
   #popBar button.primary{color:var(--accent);font-weight:600}
   #popBar button.primary:hover{background:var(--accent-soft)}
   #popBar .sep{width:1px;height:16px;background:var(--line);margin:0 3px}
-  #popBody{display:none;border-top:1px solid var(--line);padding:11px 13px 12px}
-  #popup.expanded #popBody{display:block}
-  #popSrc{
-    font-size:11.5px;color:var(--ink-3);max-height:52px;overflow:auto;
-    padding-bottom:8px;margin-bottom:9px;border-bottom:1px dashed var(--line);
-    font-style:italic;
+  /* ------------- highlighter layers on each page -------------
+     yellow lives in the translation pane; on the PDF itself:
+     green = memo, pink = quote attached to a question. Both are translucent,
+     so where they overlap the colors mix on their own. */
+  .quoteLayer{position:absolute;inset:0;z-index:1;pointer-events:none}
+  .noteLayer{position:absolute;inset:0;z-index:3;pointer-events:none}
+  .hlRect{position:absolute;border-radius:2px}
+  .quoteLayer .hlRect{background:rgba(244,143,177,.34)}
+  .noteLayer .hlRect{
+    background:rgba(102,187,106,.30);
+    pointer-events:auto;cursor:pointer;
+    transition:background .15s;
   }
-  #popOut{font-size:14px;line-height:1.72;white-space:pre-wrap;
-    max-height:44vh;overflow:auto;color:var(--ink)}
-  #popOut.err{color:var(--warn);white-space:pre-wrap}
-  #popFoot{display:flex;gap:6px;margin-top:10px;align-items:center}
-  #popFoot button{
-    border:1px solid var(--line);background:#fbfaf8;color:var(--ink-2);
-    padding:3px 9px;border-radius:6px;font-size:12px;
+  .noteLayer .hlRect:hover,.noteLayer .hlRect.hov{background:rgba(76,175,80,.5)}
+
+  /* ------------- memo editor popup -------------
+     closes only via the x button, never by clicking elsewhere */
+  #memoPop{
+    position:fixed;z-index:62;display:none;width:340px;
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    box-shadow:var(--shadow);
   }
-  #popFoot button:hover{background:#f0efec;color:var(--ink)}
+  #memoPop.show{display:block}
+  #memoHead{
+    display:flex;align-items:center;gap:8px;padding:9px 8px 8px 14px;
+    border-bottom:1px solid var(--line);
+  }
+  #memoTitle{font-size:13px;font-weight:600;color:var(--ink)}
+  #memoClose{
+    border:0;background:transparent;color:var(--ink-3);cursor:pointer;
+    font-size:17px;line-height:1;padding:3px 9px;border-radius:6px;
+  }
+  #memoClose:hover{background:#f0efec;color:var(--ink)}
+  #memoSrc{
+    font-size:11.5px;color:var(--ink-3);font-style:italic;line-height:1.55;
+    max-height:64px;overflow:auto;padding:8px 14px 0;
+  }
+  #memoText{
+    display:block;width:calc(100% - 28px);margin:9px 14px 0;resize:vertical;
+    min-height:88px;max-height:40vh;border:1px solid var(--line);border-radius:8px;
+    padding:8px 10px;font:inherit;font-size:13.5px;line-height:1.6;
+    background:#fff;color:var(--ink);
+  }
+  #memoText:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+  #memoFoot{display:flex;align-items:center;gap:6px;padding:10px 14px 12px}
+  #memoDelete{
+    border:1px solid var(--line);background:#fbfaf8;color:var(--warn);
+    padding:5px 11px;border-radius:7px;font-size:12.5px;cursor:pointer;
+  }
+  #memoDelete:hover{background:#fbeae4;border-color:#e5c4b8}
+  #memoDelete.hidden{display:none}
+  #memoSave{
+    border:0;background:var(--accent);color:#fff;font-weight:600;
+    padding:6px 16px;border-radius:8px;font-size:13px;cursor:pointer;
+  }
+  #memoSave:disabled{background:#c3c0ba;cursor:default}
 
   .dots::after{content:'.';animation:dots 1.2s steps(3,end) infinite}
   @keyframes dots{0%{content:'.'}33%{content:'..'}66%{content:'...'}}
@@ -423,20 +463,25 @@
 
 <div id="popup">
   <div id="popBar">
-    <button id="btnTranslate" class="primary">번역</button>
+    <button id="btnMemo" class="primary">메모하기</button>
     <span class="sep"></span>
     <button id="btnAsk">질문에 첨부</button>
     <button id="btnCopySel">복사</button>
   </div>
-  <div id="popBody">
-    <div id="popSrc"></div>
-    <div id="popOut"></div>
-    <div id="popFoot">
-      <button id="btnCopyTr">번역 복사</button>
-      <button id="btnAskTr">이어서 질문</button>
-      <div class="spacer"></div>
-      <button id="btnClose">닫기</button>
-    </div>
+</div>
+
+<div id="memoPop">
+  <div id="memoHead">
+    <span id="memoTitle">메모</span>
+    <div class="spacer"></div>
+    <button id="memoClose" title="닫기">×</button>
+  </div>
+  <div id="memoSrc"></div>
+  <textarea id="memoText" placeholder="메모를 입력하세요…"></textarea>
+  <div id="memoFoot">
+    <button id="memoDelete">삭제</button>
+    <div class="spacer"></div>
+    <button id="memoSave">저장</button>
   </div>
 </div>
 
@@ -484,8 +529,17 @@ async function loadPdf(){
     num.textContent = n;
     el.appendChild(num);
 
+    // highlighter layers use %-coordinates, so they survive zoom and the
+    // canvas/text-layer teardown of virtualized pages untouched
+    const quoteLayer = document.createElement('div');
+    quoteLayer.className = 'quoteLayer';
+    el.appendChild(quoteLayer);
+    const noteLayer = document.createElement('div');
+    noteLayer.className = 'noteLayer';
+    el.appendChild(noteLayer);
+
     viewer.appendChild(el);
-    pages.push({ n, el, base, page, canvas:null, layer:null, state:'blank', dirty:false });
+    pages.push({ n, el, base, page, quoteLayer, noteLayer, canvas:null, layer:null, state:'blank', dirty:false });
   }
 
   fitWidth();
@@ -836,9 +890,7 @@ function repositionPopup(){
 }
 
 function hidePopup(){
-  popup.classList.remove('show', 'expanded');
-  $('popOut').textContent = '';
-  $('popOut').className = '';
+  popup.classList.remove('show');
   selRange = null;
   transClearHl();          // the selection is gone - so is its highlight
 }
@@ -859,9 +911,6 @@ document.addEventListener('mouseup', (e) => {
 
     selText = normalize(raw);
     selRange = range;
-    popup.classList.remove('expanded');
-    $('popOut').textContent = '';
-    $('popOut').className = '';
     showPopupAt(range.getBoundingClientRect());
 
     const host = range.commonAncestorContainer.nodeType === 1
@@ -874,14 +923,7 @@ document.addEventListener('mouseup', (e) => {
 // clicking the popup must not wipe the selection underneath it
 popup.addEventListener('mousedown', (e) => e.preventDefault());
 
-document.addEventListener('mousedown', (e) => {
-  if (!popup.contains(e.target) && popup.classList.contains('expanded')) hidePopup();
-});
-
-$('btnClose').onclick = hidePopup;
-
 $('btnCopySel').onclick = () => { navigator.clipboard.writeText(selText); flashBtn($('btnCopySel'), '복사됨'); };
-$('btnCopyTr').onclick  = () => { navigator.clipboard.writeText($('popOut').textContent); flashBtn($('btnCopyTr'), '복사됨'); };
 
 function flashBtn(btn, label){
   const old = btn.textContent;
@@ -889,33 +931,177 @@ function flashBtn(btn, label){
   setTimeout(() => { btn.textContent = old; }, 1100);
 }
 
-$('btnTranslate').onclick = async () => {
-  if (!selText) return;
-  popup.classList.add('expanded');
-  $('popSrc').textContent = selText.length > 300 ? selText.slice(0, 300) + '…' : selText;
-  const out = $('popOut');
-  out.className = 'dots';
-  out.textContent = '번역 중';
-  repositionPopup();
+/* ======================= highlighter notes =======================
+   green = memo, pink = quote that was actually asked about. Rects are stored
+   normalized (0..1 of the page box) so they survive zoom and re-renders, and
+   persist per paper on the server (data/papers/<id>/notes.json). */
 
-  try {
-    const r = await fetch('/api/translate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: selText }),
-    });
-    const j = await r.json();
-    if (j.ok){ out.className = ''; out.textContent = j.text.trim(); }
-    else     { out.className = 'err'; out.textContent = '번역 실패\n' + (j.error || '알 수 없는 오류'); }
-  } catch (e){
-    out.className = 'err';
-    out.textContent = '서버에 연결하지 못했습니다.\n' + e.message;
+let notes = [];              // [{id, type:'memo'|'quote', src, memo, question, spans:[{page, rects:[{x,y,w,h}]}]}]
+let pendingQuote = null;     // spans captured when 질문에 첨부 was clicked
+
+// One selection can spray dozens of fragment rects; merge the ones that sit
+// on the same text line into single bars so the highlight looks hand-drawn.
+function mergeRects(rs){
+  rs.sort((a, b) => a.y - b.y || a.x - b.x);
+  const rows = [];
+  for (const r of rs){
+    const row = rows.find((q) => Math.abs(q.y - r.y) < Math.max(q.h, r.h) * 0.5);
+    if (row){
+      const x2 = Math.max(row.x + row.w, r.x + r.w);
+      const y2 = Math.max(row.y + row.h, r.y + r.h);
+      row.x = Math.min(row.x, r.x); row.w = x2 - row.x;
+      row.y = Math.min(row.y, r.y); row.h = y2 - row.y;
+    } else rows.push({ ...r });
   }
-  repositionPopup();
+  return rows;
+}
+
+// Convert the current selection into per-page normalized rects.
+function captureSpans(){
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount || sel.isCollapsed) return null;
+  const rects = [...sel.getRangeAt(0).getClientRects()];
+  const out = [];
+  for (const p of pages){
+    const pr = p.el.getBoundingClientRect();
+    if (pr.width < 1) continue;
+    const rs = rects
+      .filter((r) => r.width > 1 && r.height > 1 &&
+        r.left >= pr.left - 2 && r.right <= pr.right + 2 &&
+        r.top >= pr.top - 2 && r.bottom <= pr.bottom + 2)
+      .map((r) => ({
+        x: (r.left - pr.left) / pr.width,  y: (r.top - pr.top) / pr.height,
+        w: r.width / pr.width,             h: r.height / pr.height,
+      }));
+    if (rs.length) out.push({ page: p.n, rects: mergeRects(rs).slice(0, 80) });
+  }
+  return out.length ? out : null;
+}
+
+function renderNotes(){
+  for (const p of pages){ p.quoteLayer.innerHTML = ''; p.noteLayer.innerHTML = ''; }
+  for (const note of notes){
+    for (const span of (note.spans || [])){
+      const p = pages[(+span.page) - 1];
+      if (!p) continue;
+      const layer = note.type === 'memo' ? p.noteLayer : p.quoteLayer;
+      for (const r of (span.rects || [])){
+        const d = document.createElement('div');
+        d.className = 'hlRect';
+        d.style.left   = (r.x * 100) + '%';
+        d.style.top    = (r.y * 100) + '%';
+        d.style.width  = (r.w * 100) + '%';
+        d.style.height = (r.h * 100) + '%';
+        d.dataset.note = note.id;
+        if (note.type === 'memo'){
+          d.title = note.memo || '';
+          d.onmouseenter = () => document.querySelectorAll(`.noteLayer .hlRect[data-note="${note.id}"]`)
+                                          .forEach((el) => el.classList.add('hov'));
+          d.onmouseleave = () => document.querySelectorAll(`.noteLayer .hlRect[data-note="${note.id}"]`)
+                                          .forEach((el) => el.classList.remove('hov'));
+          d.onclick = (e) => openMemoEditor(note, { x: e.clientX, y: e.clientY });
+        } else {
+          d.title = note.question ? '질문: ' + note.question : '';
+        }
+        layer.appendChild(d);
+      }
+    }
+  }
+}
+
+async function loadNotes(){
+  if (!hasPaper()) return;
+  try {
+    const j = await (await fetch('/api/notes?id=' + encodeURIComponent(appState.paper.id))).json();
+    notes = (j && j.notes) || [];
+  } catch (e){ notes = []; }
+  renderNotes();
+}
+
+async function saveNote(note){
+  const r = await fetch('/api/notes/save', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paperId: appState.paper.id, note }),
+  });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || '저장 실패');
+  note.id = j.id;
+  const idx = notes.findIndex((n) => n.id === note.id);
+  if (idx >= 0) notes[idx] = note; else notes.push(note);
+  renderNotes();
+  return note;
+}
+
+/* ---- memo editor: only the x closes it ---- */
+const memoPop = $('memoPop');
+let memoEditing = null;      // the note being edited (may not be saved yet)
+
+function showMemoAt(pt){
+  memoPop.classList.add('show');
+  const w = memoPop.offsetWidth, h = memoPop.offsetHeight;
+  memoPop.style.left = Math.min(window.innerWidth - w - 12, Math.max(12, pt.x + 14)) + 'px';
+  memoPop.style.top  = Math.min(window.innerHeight - h - 12, Math.max(12, pt.y - h / 2)) + 'px';
+}
+
+function openMemoEditor(note, pt){
+  memoEditing = note;
+  $('memoTitle').textContent = note.id ? '메모 수정' : '메모';
+  $('memoSrc').textContent = note.src.length > 220 ? note.src.slice(0, 220) + '…' : note.src;
+  $('memoText').value = note.memo || '';
+  $('memoDelete').classList.toggle('hidden', !note.id);
+  showMemoAt(pt);
+  $('memoText').focus();
+}
+
+function closeMemoEditor(){
+  memoPop.classList.remove('show');
+  memoEditing = null;
+}
+
+$('memoClose').onclick = closeMemoEditor;
+
+$('memoSave').onclick = async () => {
+  if (!memoEditing) return;
+  memoEditing.memo = $('memoText').value.trim();
+  $('memoSave').disabled = true;
+  try {
+    await saveNote(memoEditing);
+    closeMemoEditor();
+  } catch (e){
+    alert('메모 저장 실패: ' + e.message);
+  } finally {
+    $('memoSave').disabled = false;
+  }
 };
 
-$('btnAsk').onclick   = () => { attachQuote(selText); hidePopup(); };
-$('btnAskTr').onclick = () => { attachQuote(selText); hidePopup(); };
+$('memoDelete').onclick = async () => {
+  if (!memoEditing || !memoEditing.id) return;
+  try {
+    await fetch('/api/notes/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paperId: appState.paper.id, id: memoEditing.id }),
+    });
+    notes = notes.filter((n) => n.id !== memoEditing.id);
+    renderNotes();
+    closeMemoEditor();
+  } catch (e){ alert('삭제 실패: ' + e.message); }
+};
+
+$('btnMemo').onclick = () => {
+  if (!selText) return;
+  const spans = captureSpans();
+  if (!spans) return;
+  const rect = selRange ? selRange.getBoundingClientRect() : { right: innerWidth / 2, top: innerHeight / 2 };
+  hidePopup();
+  openMemoEditor({ type: 'memo', src: selText, memo: '', spans }, { x: rect.right, y: rect.top });
+};
+
+$('btnAsk').onclick = () => {
+  // remember where this quote came from; it turns pink once actually asked
+  pendingQuote = { spans: captureSpans(), src: selText };
+  attachQuote(selText);
+  hidePopup();
+};
 
 /* ======================= translation pane ======================= */
 // Every page is pre-translated in the background (job starts at PDF import;
@@ -1232,7 +1418,7 @@ function attachQuote(text){
   $('quoteBox').classList.add('show');
   chatInput.focus();
 }
-$('quoteX').onclick = () => { quoted = ''; $('quoteBox').classList.remove('show'); };
+$('quoteX').onclick = () => { quoted = ''; pendingQuote = null; $('quoteBox').classList.remove('show'); };
 
 function esc(s){
   return s.replace(/[&<>]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;' }[c]));
@@ -1337,6 +1523,9 @@ async function send(){
   }
 
   addMsg('user', (quoted ? '“' + (quoted.length > 160 ? quoted.slice(0,160) + '…' : quoted) + '”\n\n' : '') + (typed || '이 부분을 설명해줘.'));
+  const askedQuote = quoted ? pendingQuote : null;   // pink mark once the ask succeeds
+  const askedText = typed || '이 부분을 설명해줘.';
+  pendingQuote = null;
   chatInput.value = '';
   chatInput.style.height = 'auto';
   quoted = ''; $('quoteBox').classList.remove('show');
@@ -1360,7 +1549,14 @@ async function send(){
     });
     const j = await r.json();
     pending.remove();
-    if (j.ok) addMsg('bot', j.text);
+    if (j.ok){
+      addMsg('bot', j.text);
+      // the quote was really asked about - paint it pink, forever tied to the session
+      if (askedQuote && askedQuote.spans){
+        saveNote({ type: 'quote', src: askedQuote.src, question: askedText,
+                   sessionKey, spans: askedQuote.spans }).catch(() => {});
+      }
+    }
     else if (j.code === 'paper_mismatch'){
       addMsg('bot', '다른 창에서 논문이 바뀌어 화면을 새로 불러옵니다.', true);
       setTimeout(() => location.reload(), 1200);
@@ -1667,6 +1863,7 @@ fetchState()
     }
     await loadPdf();
     restoreScrollPos();
+    loadNotes();                       // green/pink highlighters, async is fine
     await restoreSession();
     if (transOn()) transShow(transTarget());
     $('boot').classList.add('gone');
