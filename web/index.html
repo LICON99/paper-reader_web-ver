@@ -1233,17 +1233,31 @@ function renderTransSeg(text){
     return '\n<div class="mathblock">' + texHtml(t, true) + '</div>\n';
   });
 
-  const out = [];
+  // keep line structure: a newline the model wrote on purpose (e.g. after a
+  // bold section heading) becomes <br>; blocks (tables, display math) join
+  // without one since they break the line anyway
+  const parts = [];
   let tbl = [];
   const flush = () => {
-    if (tbl.length){ out.push(mdTableHtml(tbl, transInline)); block = true; tbl = []; }
+    if (tbl.length){ parts.push({ html: mdTableHtml(tbl, transInline), block: true }); block = true; tbl = []; }
   };
   for (const ln of s.split('\n')){
     if (/^\s*\|.*\|\s*$/.test(ln)) tbl.push(ln);
-    else { flush(); if (ln.trim()) out.push(ln.includes('mathblock') ? ln : transInline(ln)); }
+    else {
+      flush();
+      if (ln.trim()){
+        const isBlock = ln.includes('mathblock');
+        parts.push({ html: isBlock ? ln : transInline(ln), block: isBlock });
+      }
+    }
   }
   flush();
-  return { html: out.join(' '), block };
+  let html = '';
+  parts.forEach((p, i) => {
+    if (i) html += (p.block || parts[i - 1].block) ? ' ' : '<br>';
+    html += p.html;
+  });
+  return { html, block };
 }
 
 function transRender(n){
@@ -1252,12 +1266,15 @@ function transRender(n){
   const segs = transCache[n] || [];
   if (!segs.length){ transMsg('이 페이지에는 번역할 텍스트가 없습니다.'); return; }
   for (const s of segs){
+    // equation shards absorbed into a $$...$$ block come back empty - skip them
+    if (!((s.ko || '').trim())) continue;
     const el = document.createElement('div');
     el.className = 'tseg';
     if (s.sents && s.sents.length){
       // one node per sentence, so a drag can light up just that sentence
       s.sents.forEach((p, i) => {
-        if (i) el.appendChild(document.createTextNode(' '));
+        if (!((p.ko || '').trim())) return;
+        if (el.childNodes.length) el.appendChild(document.createTextNode(' '));
         const r = renderTransSeg(p.ko);
         const sp = document.createElement(r.block ? 'div' : 'span');
         sp.className = 'tsent' + (r.block ? ' tblock' : '');

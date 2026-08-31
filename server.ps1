@@ -344,24 +344,33 @@ $TransJobScript = {
 
         $parts = [regex]::Split([string]$res.text, '\u27E6(\d+)\.(\d+)\u27E7')
         $out = @{}
+        $pos = @{}      # order each marker appeared in the response - the model
+                        # re-sorts shuffled two-column extractions into reading order
+        $ord = 0
         for ($j = 1; $j -le $parts.Length - 3; $j += 3) {
-            $out[($parts[$j] + '.' + $parts[$j + 1])] = $parts[$j + 2].Trim()
+            $key = ($parts[$j] + '.' + $parts[$j + 1])
+            $out[$key] = $parts[$j + 2].Trim()
+            if (-not $pos.ContainsKey($key)) { $pos[$key] = $ord; $ord++ }
         }
         $segs = New-Object Collections.ArrayList
         for ($i = 0; $i -lt $Paras.Count; $i++) {
             $sents = @($Paras[$i])
             $pairs = New-Object Collections.ArrayList
+            $minPos = [int]::MaxValue
             for ($k = 0; $k -lt $sents.Count; $k++) {
                 $key = ('' + ($i + 1) + '.' + ($k + 1))
                 if (-not $out.ContainsKey($key)) {
                     return @{ ok = $false; error = ('model returned {0}/{1} sentences' -f $out.Count, $count) }
                 }
+                if ($pos[$key] -lt $minPos) { $minPos = $pos[$key] }
                 [void]$pairs.Add(@{ src = $sents[$k]; ko = $out[$key] })
             }
             $kos = @($pairs | ForEach-Object { $_.ko })
-            [void]$segs.Add(@{ src = ($sents -join ' '); ko = ($kos -join ' '); sents = $pairs.ToArray() })
+            [void]$segs.Add(@{ src = ($sents -join ' '); ko = ($kos -join ' '); sents = $pairs.ToArray(); ord = $minPos })
         }
-        return @{ ok = $true; segs = $segs.ToArray() }
+        # paragraphs follow the model's (reading-order) output sequence
+        $sorted = @($segs.ToArray() | Sort-Object { $_.ord })
+        return @{ ok = $true; segs = $sorted }
     }
 
     # ---- main ----
