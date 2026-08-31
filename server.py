@@ -491,8 +491,12 @@ def invoke_claude(prompt, timeout_sec=300, model='sonnet', effort='medium'):
     if effort not in ALLOWED_EFFORTS:
         effort = 'medium'
 
+    # --setting-sources "" keeps the user's personal CLAUDE.md / global rules
+    # out of app calls - without it, chat answers pick up the user's private
+    # Q&A formatting conventions.
     cmd = [CLAUDE, '-p', '--model', model, '--effort', effort,
-           '--tools', '', '--no-session-persistence', '--output-format', 'json']
+           '--tools', '', '--no-session-persistence', '--output-format', 'json',
+           '--setting-sources', '']
     try:
         proc = subprocess.run(cmd, input=prompt.encode('utf-8'), capture_output=True,
                               cwd=str(ROOT), timeout=timeout_sec)
@@ -719,6 +723,12 @@ class Handler(BaseHTTPRequestHandler):
         if not paper_id:
             return self.send_json(
                 {'ok': False, 'error': '먼저 상단 [논문] 메뉴에서 PDF를 가져오세요.'}, 400)
+
+        # a tab that still shows another paper must not append turns here
+        want = str(body.get('paperId', ''))
+        if want and want != paper_id:
+            return self.send_json({'ok': False, 'code': 'paper_mismatch',
+                                   'error': 'active paper changed'}, 409)
 
         # deeper effort levels think a lot longer over a 17k-token paper
         timeout = {'xhigh': 600, 'max': 720, 'high': 450}.get(effort, 300)

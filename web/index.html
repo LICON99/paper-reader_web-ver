@@ -1303,11 +1303,18 @@ async function send(){
         sessionKey, message,
         model: $('selModel').value,
         effort: $('selEffort').value,
+        // which paper this tab believes is open - the server rejects the call
+        // if another tab/window has switched papers in the meantime
+        paperId: appState && appState.paper ? appState.paper.id : '',
       }),
     });
     const j = await r.json();
     pending.remove();
     if (j.ok) addMsg('bot', j.text);
+    else if (j.code === 'paper_mismatch'){
+      addMsg('bot', '다른 창에서 논문이 바뀌어 화면을 새로 불러옵니다.', true);
+      setTimeout(() => location.reload(), 1200);
+    }
     else      addMsg('bot', '답변 실패: ' + (j.error || '알 수 없는 오류'), true);
   } catch (e){
     pending.remove();
