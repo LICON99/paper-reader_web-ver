@@ -1226,12 +1226,22 @@ function mdTableHtml(lines, cellFn){
 // One translated sentence -> html. Returns {html, block}; block means it holds
 // a table or display math and must be laid out as its own line.
 function renderTransSeg(text){
-  let s = esc(text);
+  // Math must be pulled out BEFORE HTML-escaping: escaping first fed KaTeX
+  // "&amp;"/"&lt;" for the aligned-environment "&" and "<", which rendered as
+  // literal amp;/lt; inside equations. Stash rendered math behind private-use
+  // sentinels and substitute after all text processing.
   let block = false;
-  s = s.replace(/\$\$([\s\S]+?)\$\$/g, (m, t) => {
+  const stash = [];
+  let raw = text.replace(/\$\$([\s\S]+?)\$\$/g, (m, t) => {
     block = true;
-    return '\n<div class="mathblock">' + texHtml(t, true) + '</div>\n';
+    stash.push('<div class="mathblock">' + texHtml(t, true) + '</div>');
+    return '\n' + (stash.length - 1) + '\n';
   });
+  raw = raw.replace(/\$([^$\n]+?)\$/g, (m, t) => {
+    stash.push('<span class="math">' + texHtml(t) + '</span>');
+    return '' + (stash.length - 1) + '';
+  });
+  let s = esc(raw);
 
   // keep line structure: a newline the model wrote on purpose (e.g. after a
   // bold section heading) becomes <br>; blocks (tables, display math) join
@@ -1246,7 +1256,7 @@ function renderTransSeg(text){
     else {
       flush();
       if (ln.trim()){
-        const isBlock = ln.includes('mathblock');
+        const isBlock = /^\s*\d+\s*$/.test(ln);   // display-math sentinel on its own line
         parts.push({ html: isBlock ? ln : transInline(ln), block: isBlock });
       }
     }
@@ -1257,6 +1267,7 @@ function renderTransSeg(text){
     if (i) html += (p.block || parts[i - 1].block) ? ' ' : '<br>';
     html += p.html;
   });
+  html = html.replace(/(\d+)/g, (m, i) => stash[+i]);
   return { html, block };
 }
 
@@ -1355,32 +1366,54 @@ async function transHighlight(pageNo, text){
   const elMap = {};
   body.querySelectorAll('.tseg').forEach((el) => { elMap[+el.dataset.seg] = el; });
   const best = Math.max(...scores);
-
-  // Sentence-first: a drag that spans two paragraphs (a sentence crossing the
-  // column break, say) splits the word overlap ~50/50 between them, so a
-  // paragraph-level gate can reject both halves. Score every sentence in
-  // every paragraph, then use the paragraph gate only as the fallback.
   let first = null;
-  segs.forEach((s, i) => {
-    const el = elMap[i];
-    if (!el) return;
-    const sents = s.sents || [];
-    const spanMap = {};
-    el.querySelectorAll('.tsent').forEach((sp) => { spanMap[+sp.dataset.sent] = sp; });
-    let hit = false;
-    sents.forEach((p, k) => {
-      const sp = spanMap[k];
-      if (sp && sentScore(p, selN, selLower, words) >= 0.5){
-        sp.classList.add('hl');
-        if (!first) first = sp;
-        hit = true;
+
+  // A short drag ("Algorithm") is contained in every sentence that mentions
+  // the word, so containment would light them all. Below a distinctiveness
+  // threshold, light only the tightest sentence that contains the selection.
+  if (selN.length >= 4 && selN.length < 12){
+    let bestSp = null, bestLen = Infinity;
+    segs.forEach((s, i) => {
+      const el = elMap[i];
+      if (!el) return;
+      const spanMap = {};
+      el.querySelectorAll('.tsent').forEach((sp) => { spanMap[+sp.dataset.sent] = sp; });
+      (s.sents || []).forEach((p, k) => {
+        const sp = spanMap[k];
+        if (!sp) return;
+        const sN = tnorm(p.src);
+        if (sN.includes(selN) && sN.length < bestLen){ bestLen = sN.length; bestSp = sp; }
+      });
+    });
+    if (!bestSp) return;
+    bestSp.classList.add('hl');
+    first = bestSp;
+  } else {
+    // Sentence-first: a drag that spans two paragraphs (a sentence crossing
+    // the column break, say) splits the word overlap ~50/50 between them, so
+    // a paragraph-level gate can reject both halves. Score every sentence in
+    // every paragraph, then use the paragraph gate only as the fallback.
+    segs.forEach((s, i) => {
+      const el = elMap[i];
+      if (!el) return;
+      const sents = s.sents || [];
+      const spanMap = {};
+      el.querySelectorAll('.tsent').forEach((sp) => { spanMap[+sp.dataset.sent] = sp; });
+      let hit = false;
+      sents.forEach((p, k) => {
+        const sp = spanMap[k];
+        if (sp && sentScore(p, selN, selLower, words) >= 0.5){
+          sp.classList.add('hl');
+          if (!first) first = sp;
+          hit = true;
+        }
+      });
+      if (!hit && words.length >= 3 && best >= 0.3 && scores[i] >= Math.max(0.5, best * 0.9)){
+        el.classList.add('hl');               // no sentence stood out - whole paragraph
+        if (!first) first = el;
       }
     });
-    if (!hit && best >= 0.3 && scores[i] >= Math.max(0.5, best * 0.9)){
-      el.classList.add('hl');                 // no sentence stood out - whole paragraph
-      if (!first) first = el;
-    }
-  });
+  }
   if (!first) return;
   // scrollIntoView would also scroll every ancestor - including the document
   // itself, which shoves the whole app up and clips the topbar. Scroll only
