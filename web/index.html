@@ -1,0 +1,1208 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quadrotor Test Bed — 논문 리더</title>
+<style>
+  :root{
+    --bg:#f2f1ee;
+    --panel:#ffffff;
+    --ink:#1b1a18;
+    --ink-2:#57534e;
+    --ink-3:#8a8580;
+    --line:#e0ddd7;
+    --accent:#2f6fed;
+    --accent-soft:#eaf0fe;
+    --warn:#b4472c;
+    --shadow:0 6px 24px rgba(30,27,22,.13);
+    --topbar-h:48px;
+    --sans:"Pretendard","Malgun Gothic","Segoe UI",system-ui,sans-serif;
+    --mono:"Cascadia Mono","Consolas",monospace;
+  }
+
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font-family:var(--sans);font-size:14px;line-height:1.6;
+    overflow:hidden;
+  }
+  button{font-family:inherit;font-size:inherit;cursor:pointer}
+
+  /* ---------------- layout ---------------- */
+  #app{display:flex;flex-direction:column;height:100vh}
+
+  #topbar{
+    height:var(--topbar-h);flex:0 0 auto;
+    display:flex;align-items:center;gap:14px;
+    padding:0 14px;background:var(--panel);
+    border-bottom:1px solid var(--line);
+    box-shadow:0 1px 3px rgba(30,27,22,.05);
+    z-index:30;
+  }
+  #docTitle{
+    font-weight:600;font-size:13px;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;max-width:min(42vw,560px);
+    color:var(--ink);
+  }
+  #docTitle span{color:var(--ink-3);font-weight:400}
+  .spacer{flex:1 1 auto}
+
+  .group{display:flex;align-items:center;gap:2px;
+    border:1px solid var(--line);border-radius:8px;padding:2px;background:#fbfaf8}
+  .group button{
+    border:0;background:transparent;color:var(--ink-2);
+    padding:4px 9px;border-radius:6px;line-height:1.2;
+  }
+  .group button:hover{background:#ecebe7;color:var(--ink)}
+  .group button.on{background:var(--accent-soft);color:var(--accent)}
+  .group .sep{width:1px;height:18px;background:var(--line);margin:0 2px}
+  .group .label{color:var(--ink-3);font-size:12px;padding:0 6px;
+    font-variant-numeric:tabular-nums;min-width:52px;text-align:center}
+  #pageInput{
+    width:44px;border:1px solid var(--line);border-radius:5px;background:#fff;
+    text-align:center;font:inherit;font-size:12px;padding:3px 2px;color:var(--ink);
+    font-variant-numeric:tabular-nums;
+  }
+
+  #main{flex:1 1 auto;display:flex;min-height:0}
+
+  /* ---------------- pdf viewer ---------------- */
+  #viewerWrap{flex:1 1 auto;min-width:0;position:relative;overflow:hidden}
+  #viewer{
+    position:absolute;inset:0;overflow:auto;
+    padding:22px 0 60px;scroll-behavior:auto;
+  }
+  .page{
+    position:relative;margin:0 auto 18px;background:#fff;
+    box-shadow:0 2px 10px rgba(30,27,22,.16);
+    border-radius:2px;overflow:hidden;
+  }
+  .page canvas{display:block}
+  .page .placeholder{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    color:#c9c4bd;font-size:12px;letter-spacing:.08em;
+  }
+  .page .pageNum{
+    position:absolute;right:8px;bottom:6px;z-index:5;
+    font-size:10px;color:#b8b2aa;background:rgba(255,255,255,.75);
+    padding:1px 5px;border-radius:4px;pointer-events:none;
+  }
+  .page.flash{outline:3px solid var(--accent);outline-offset:-3px}
+
+  /* pdf.js text layer — mirrors the official viewer stylesheet */
+  .textLayer{
+    position:absolute;inset:0;overflow:hidden;
+    line-height:1;text-size-adjust:none;forced-color-adjust:none;
+    transform-origin:0 0;caret-color:CanvasText;z-index:2;
+  }
+  .textLayer :is(span,br){
+    color:transparent;position:absolute;white-space:pre;
+    cursor:text;transform-origin:0% 0%;
+  }
+  .textLayer span.markedContent{top:0;height:0}
+  .textLayer ::selection{background:rgba(47,111,237,.32)}
+  .textLayer br::selection{color:transparent}
+  .textLayer .endOfContent{
+    display:block;position:absolute;inset:100% 0 0;
+    z-index:0;cursor:default;user-select:none;
+  }
+  .textLayer .endOfContent.active{top:0}
+
+  /* ---------------- selection popup ---------------- */
+  #popup{
+    position:fixed;z-index:60;display:none;
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    box-shadow:var(--shadow);max-width:520px;min-width:0;
+  }
+  #popup.show{display:block}
+  #popBar{display:flex;align-items:center;gap:2px;padding:4px}
+  #popBar button{
+    border:0;background:transparent;color:var(--ink-2);
+    padding:5px 10px;border-radius:6px;white-space:nowrap;font-size:13px;
+  }
+  #popBar button:hover{background:#f0efec;color:var(--ink)}
+  #popBar button.primary{color:var(--accent);font-weight:600}
+  #popBar button.primary:hover{background:var(--accent-soft)}
+  #popBar .sep{width:1px;height:16px;background:var(--line);margin:0 3px}
+  #popBody{display:none;border-top:1px solid var(--line);padding:11px 13px 12px}
+  #popup.expanded #popBody{display:block}
+  #popSrc{
+    font-size:11.5px;color:var(--ink-3);max-height:52px;overflow:auto;
+    padding-bottom:8px;margin-bottom:9px;border-bottom:1px dashed var(--line);
+    font-style:italic;
+  }
+  #popOut{font-size:14px;line-height:1.72;white-space:pre-wrap;
+    max-height:44vh;overflow:auto;color:var(--ink)}
+  #popOut.err{color:var(--warn);white-space:pre-wrap}
+  #popFoot{display:flex;gap:6px;margin-top:10px;align-items:center}
+  #popFoot button{
+    border:1px solid var(--line);background:#fbfaf8;color:var(--ink-2);
+    padding:3px 9px;border-radius:6px;font-size:12px;
+  }
+  #popFoot button:hover{background:#f0efec;color:var(--ink)}
+
+  .dots::after{content:'';animation:dots 1.2s steps(4,end) infinite}
+  @keyframes dots{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}}
+
+  /* ---------------- sidebar ---------------- */
+  #resizer{
+    flex:0 0 5px;cursor:col-resize;background:transparent;
+    border-left:1px solid var(--line);
+  }
+  #resizer:hover,#resizer.drag{background:var(--accent-soft)}
+  #sidebar{
+    flex:0 0 400px;min-width:280px;max-width:60vw;position:relative;
+    display:flex;flex-direction:column;background:var(--panel);min-height:0;
+  }
+  body.no-side #resizer,body.no-side #sidebar{display:none}
+
+  #sideHead{
+    flex:0 0 auto;display:flex;align-items:center;gap:8px;
+    padding:10px 12px;border-bottom:1px solid var(--line);
+  }
+  #sideHead h2{margin:0;font-size:13px;font-weight:600}
+  #sideHead .sub{font-size:11px;color:var(--ink-3);font-weight:400}
+  #btnReset,#btnSessions{
+    border:1px solid var(--line);background:#fbfaf8;color:var(--ink-2);
+    padding:3px 9px;border-radius:6px;font-size:12px;
+  }
+  #btnReset:hover,#btnSessions:hover{background:#f0efec;color:var(--ink)}
+
+  /* sessions dropdown, anchored to the sidebar header */
+  #sessPanel{
+    position:absolute;top:42px;left:8px;right:8px;z-index:45;display:none;
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    box-shadow:var(--shadow);max-height:52vh;overflow:auto;padding:5px;
+  }
+  #sessPanel.show{display:block}
+  .sessItem{display:flex;align-items:center;gap:6px;padding:7px 9px;border-radius:8px;cursor:pointer}
+  .sessItem:hover{background:#f4f2ee}
+  .sessItem.cur{background:var(--accent-soft)}
+  .sessItem .t{flex:1 1 auto;min-width:0}
+  .sessItem .name{font-size:12.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sessItem .sub{font-size:10.5px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sessItem .del{color:var(--ink-3);font-size:14px;padding:1px 6px;border-radius:5px;flex:0 0 auto}
+  .sessItem .del:hover{background:#e8e6e1;color:var(--warn)}
+  .listEmpty{padding:12px;color:var(--ink-3);font-size:12px;text-align:center}
+
+  /* paper menu in the topbar */
+  .menuWrap{position:relative}
+  #paperMenu{
+    position:absolute;top:calc(100% + 7px);right:0;z-index:70;display:none;
+    min-width:280px;max-width:400px;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);
+    padding:5px;max-height:62vh;overflow:auto;
+  }
+  #paperMenu.show{display:block}
+  .pItem{
+    padding:7px 10px;border-radius:8px;cursor:pointer;font-size:12.5px;color:var(--ink);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .pItem:hover{background:#f4f2ee}
+  .pItem.cur{background:var(--accent-soft);color:var(--accent)}
+  .pSep{height:1px;background:var(--line);margin:5px 4px}
+  .pItem.import{color:var(--accent);font-weight:600}
+  .pItem.disabled{color:var(--ink-3);cursor:default;font-weight:400}
+
+  /* model / effort picker row under the input, Claude-desktop style */
+  #composerBar{display:flex;align-items:center;gap:2px;margin-top:7px}
+  #composerBar select{
+    appearance:none;-webkit-appearance:none;
+    border:1px solid transparent;background:transparent;color:var(--ink-3);
+    padding:3px 7px;border-radius:6px;font-size:12px;font-family:inherit;cursor:pointer;
+  }
+  #composerBar select:hover{background:#f0efec;color:var(--ink-2);border-color:var(--line)}
+
+  #chatLog{flex:1 1 auto;overflow:auto;padding:14px 12px;min-height:0}
+  .msg{margin-bottom:16px}
+  .msg .who{
+    font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--ink-3);margin-bottom:5px;font-weight:600;
+  }
+  .msg.user .bubble{
+    background:var(--accent-soft);border:1px solid #d5e0fb;
+    border-radius:10px;padding:9px 11px;white-space:pre-wrap;font-size:13.5px;
+  }
+  .msg.bot .bubble{font-size:14px}
+  .msg.bot .bubble > :first-child{margin-top:0}
+  .msg.bot .bubble > :last-child{margin-bottom:0}
+  .msg.bot .bubble p{margin:.55em 0}
+  .msg.bot .bubble h3,.msg.bot .bubble h4,.msg.bot .bubble h5,.msg.bot .bubble h6{
+    margin:1.1em 0 .4em;font-size:13.5px;font-weight:700}
+  .msg.bot .bubble ul,.msg.bot .bubble ol{margin:.5em 0;padding-left:1.35em}
+  .msg.bot .bubble li{margin:.22em 0}
+  .msg.bot .bubble code{
+    font-family:var(--mono);font-size:12.5px;background:#f4f2ee;
+    border:1px solid var(--line);border-radius:4px;padding:1px 4px;
+  }
+  .msg.bot .bubble pre{
+    background:#f7f5f1;border:1px solid var(--line);border-radius:8px;
+    padding:9px 11px;overflow-x:auto;margin:.6em 0;
+  }
+  .msg.bot .bubble pre code{background:none;border:0;padding:0;font-size:12.5px}
+  .msg.err .bubble{color:var(--warn);font-size:13px;white-space:pre-wrap}
+  .cite{
+    color:var(--accent);cursor:pointer;text-decoration:underline;
+    text-decoration-style:dotted;text-underline-offset:2px;
+  }
+  #chatEmpty{color:var(--ink-3);font-size:13px;line-height:1.75;padding:6px 2px}
+  #chatEmpty b{color:var(--ink-2)}
+  #chatEmpty .ex{
+    display:block;margin-top:6px;padding:7px 10px;border:1px solid var(--line);
+    border-radius:8px;background:#fbfaf8;cursor:pointer;font-size:12.5px;color:var(--ink-2);
+  }
+  #chatEmpty .ex:hover{border-color:var(--accent);color:var(--accent)}
+
+  #composer{flex:0 0 auto;border-top:1px solid var(--line);padding:10px 12px}
+  #quoteBox{
+    display:none;font-size:11.5px;color:var(--ink-2);background:#faf9f6;
+    border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:6px;padding:6px 9px;margin-bottom:7px;
+    max-height:74px;overflow:auto;position:relative;
+  }
+  #quoteBox.show{display:block}
+  #quoteBox .x{position:absolute;top:3px;right:5px;color:var(--ink-3);cursor:pointer;font-size:14px}
+  #inputRow{display:flex;gap:7px;align-items:flex-end}
+  #chatInput{
+    flex:1 1 auto;resize:none;border:1px solid var(--line);border-radius:9px;
+    padding:8px 10px;font:inherit;font-size:13.5px;line-height:1.55;
+    max-height:150px;min-height:38px;background:#fff;color:var(--ink);
+  }
+  #chatInput:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+  #btnSend{
+    flex:0 0 auto;border:0;background:var(--accent);color:#fff;
+    padding:9px 15px;border-radius:9px;font-weight:600;font-size:13px;
+  }
+  #btnSend:disabled{background:#c3c0ba;cursor:default}
+  #hint{font-size:11px;color:var(--ink-3);margin-top:6px}
+
+  /* ---------------- boot overlay ---------------- */
+  #boot{
+    position:fixed;inset:0;z-index:80;background:var(--bg);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  }
+  #boot.gone{display:none}
+  #boot .t{font-size:14px;color:var(--ink-2)}
+  #boot .b{width:200px;height:3px;background:var(--line);border-radius:2px;overflow:hidden}
+  #boot .b i{display:block;height:100%;width:30%;background:var(--accent);
+    animation:slide 1.1s ease-in-out infinite}
+  @keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(360%)}}
+
+  ::-webkit-scrollbar{width:11px;height:11px}
+  ::-webkit-scrollbar-thumb{background:#cfcbc4;border-radius:6px;border:3px solid var(--bg)}
+  #sidebar ::-webkit-scrollbar-thumb{border-color:var(--panel)}
+  ::-webkit-scrollbar-thumb:hover{background:#b5b0a8}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="topbar">
+    <div id="docTitle">논문 리더</div>
+    <div class="spacer"></div>
+
+    <div class="group menuWrap">
+      <button id="btnPaper" title="논문 선택 / PDF 가져오기">논문 ▾</button>
+      <div id="paperMenu"></div>
+    </div>
+
+    <div class="group">
+      <button id="btnPrev" title="이전 페이지">◀</button>
+      <input id="pageInput" value="1" inputmode="numeric">
+      <span class="label" id="pageTotal">/ –</span>
+      <button id="btnNext" title="다음 페이지">▶</button>
+    </div>
+
+    <div class="group">
+      <button id="btnZoomOut" title="축소">−</button>
+      <span class="label" id="zoomLabel">100%</span>
+      <button id="btnZoomIn" title="확대">＋</button>
+      <span class="sep"></span>
+      <button id="btnFit" title="너비 맞춤">너비 맞춤</button>
+    </div>
+
+    <div class="group">
+      <button id="btnSide" class="on" title="사이드바 열기/닫기">채팅</button>
+    </div>
+  </div>
+
+  <div id="main">
+    <div id="viewerWrap"><div id="viewer"></div></div>
+    <div id="resizer"></div>
+
+    <aside id="sidebar">
+      <div id="sideHead">
+        <h2>논문 채팅 <span class="sub">로컬 Claude</span></h2>
+        <div class="spacer"></div>
+        <button id="btnSessions" title="이전 세션 목록">세션 ▾</button>
+        <button id="btnReset">새 대화</button>
+      </div>
+      <div id="sessPanel"></div>
+
+      <div id="chatLog">
+        <div id="chatEmpty">
+          논문 전문을 이미 읽은 상태입니다. 바로 물어보세요.<br>
+          답변에는 <b>[p.12]</b> 형태로 근거 페이지가 표시되고, 누르면 그 쪽으로 이동합니다.
+          <span class="ex">이 논문의 핵심 기여가 뭐야?</span>
+          <span class="ex">쿼드로터 동역학 모델을 어떻게 세웠는지 설명해줘</span>
+          <span class="ex">파라미터 식별은 어떤 실험으로 했어?</span>
+        </div>
+      </div>
+
+      <div id="composer">
+        <div id="quoteBox"><span class="x" id="quoteX">×</span><span id="quoteText"></span></div>
+        <div id="inputRow">
+          <textarea id="chatInput" rows="1" placeholder="논문에 대해 질문하기…  (Enter 전송 / Shift+Enter 줄바꿈)"></textarea>
+        </div>
+        <div id="composerBar">
+          <select id="selModel" title="채팅 모델"></select>
+          <select id="selEffort" title="생각 깊이"></select>
+          <div class="spacer"></div>
+          <button id="btnSend">전송</button>
+        </div>
+        <div id="hint">본문을 드래그하면 <b>번역</b> 팝업이 뜹니다.</div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<div id="popup">
+  <div id="popBar">
+    <button id="btnTranslate" class="primary">번역</button>
+    <span class="sep"></span>
+    <button id="btnAsk">질문에 첨부</button>
+    <button id="btnCopySel">복사</button>
+  </div>
+  <div id="popBody">
+    <div id="popSrc"></div>
+    <div id="popOut"></div>
+    <div id="popFoot">
+      <button id="btnCopyTr">번역 복사</button>
+      <button id="btnAskTr">이어서 질문</button>
+      <div class="spacer"></div>
+      <button id="btnClose">닫기</button>
+    </div>
+  </div>
+</div>
+
+<div id="boot"><div class="t">논문을 불러오는 중…</div><div class="b"><i></i></div></div>
+<input type="file" id="pdfFile" accept=".pdf,application/pdf" style="display:none">
+
+<script type="module">
+import * as pdfjsLib from '/vendor/pdf.min.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.mjs';
+
+const $ = (id) => document.getElementById(id);
+
+/* ======================= PDF viewer ======================= */
+
+const viewer = $('viewer');
+let pdfDoc = null;
+let scale = 1.2;
+let pages = [];          // { n, el, base, canvas, layer, state, task }
+let currentPage = 1;
+let fitMode = true;      // true while the zoom should track the window width
+
+const MIN_SCALE = 0.4, MAX_SCALE = 4;
+
+async function loadPdf(){
+  pdfDoc = await pdfjsLib.getDocument({ url: '/paper.pdf' }).promise;
+  $('pageTotal').textContent = '/ ' + pdfDoc.numPages;
+
+  // Grab every page's unscaled size up front so placeholders are laid out
+  // correctly before anything is rendered.
+  for (let n = 1; n <= pdfDoc.numPages; n++){
+    const page = await pdfDoc.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+
+    const el = document.createElement('div');
+    el.className = 'page';
+    el.dataset.page = n;
+
+    const ph = document.createElement('div');
+    ph.className = 'placeholder';
+    ph.textContent = n;
+    el.appendChild(ph);
+
+    const num = document.createElement('div');
+    num.className = 'pageNum';
+    num.textContent = n;
+    el.appendChild(num);
+
+    viewer.appendChild(el);
+    pages.push({ n, el, base, page, canvas:null, layer:null, state:'blank', dirty:false });
+  }
+
+  fitWidth();
+  observeAll();
+}
+
+function applyGeometry(){
+  for (const p of pages){
+    p.el.style.width  = Math.floor(p.base.width  * scale) + 'px';
+    p.el.style.height = Math.floor(p.base.height * scale) + 'px';
+    p.el.style.setProperty('--scale-factor', scale);
+  }
+  $('zoomLabel').textContent = Math.round(scale * 100) + '%';
+}
+
+function fitWidth(){
+  fitMode = true;
+  const avail = viewer.clientWidth - 48;
+  const w = pages.length ? pages[0].base.width : 612;
+  setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, avail / w)));
+}
+
+function zoomBy(factor){
+  fitMode = false;
+  setScale(scale * factor);
+}
+
+function setScale(s){
+  s = Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+  if (Math.abs(s - scale) < 0.001){ applyGeometry(); refreshVisible(); return; }
+
+  // keep the page you are looking at anchored while zooming
+  const anchor = pages.find(p => p.n === currentPage);
+  const before = anchor ? anchor.el.offsetTop - viewer.scrollTop : 0;
+
+  scale = s;
+  // pages still drawing are flagged by clearPage and redraw when they finish
+  for (const p of pages) clearPage(p);
+  applyGeometry();
+  if (anchor) viewer.scrollTop = anchor.el.offsetTop - before;
+
+  hidePopup();
+  refreshVisible();
+}
+
+// Spans sit in content-stream order, not visual order, so a drag that leaves
+// the text can otherwise swallow the whole page. pdf.js's own viewer parks a
+// sentinel div at the drag's starting height for the duration of the gesture;
+// TextLayer creates the div but leaves the wiring to the embedder.
+function bindTextLayerMouse(div){
+  const end = div.querySelector('.endOfContent');
+  if (!end) return;
+  div.addEventListener('mousedown', (e) => {
+    if (e.target !== div){
+      const box = div.getBoundingClientRect();
+      const r = Math.max(0, Math.min(1, (e.clientY - box.top) / box.height));
+      end.style.top = (r * 100).toFixed(2) + '%';
+    }
+    end.classList.add('active');
+  });
+  div.addEventListener('mouseup', () => {
+    end.style.top = '';
+    end.classList.remove('active');
+  });
+}
+
+function resetPage(p){
+  if (p.canvas){ p.canvas.remove(); p.canvas = null; }
+  if (p.layer){ p.layer.remove(); p.layer = null; }
+  p.state = 'blank';
+  if (!p.el.querySelector('.placeholder')){
+    const ph = document.createElement('div');
+    ph.className = 'placeholder';
+    ph.textContent = p.n;
+    p.el.insertBefore(ph, p.el.firstChild);
+  }
+}
+
+// Cancelling a pdf.js render and immediately starting another one on the same
+// page leaves the new task hanging forever, so a page that is mid-draw is only
+// flagged; renderPage redraws it once the current pass finishes.
+function clearPage(p){
+  if (p.state === 'rendering'){ p.dirty = true; return; }
+  resetPage(p);
+}
+
+async function renderPage(p){
+  if (p.state !== 'blank') return;
+  p.state = 'rendering';
+  const atScale = scale;
+
+  try {
+    const viewport = p.page.getViewport({ scale: atScale });
+    const ratio = window.devicePixelRatio || 1;
+
+    // draw off-DOM, then swap in, so the page never shows a half-drawn state
+    const canvas = document.createElement('canvas');
+    canvas.width  = Math.floor(viewport.width  * ratio);
+    canvas.height = Math.floor(viewport.height * ratio);
+    canvas.style.width  = Math.floor(viewport.width)  + 'px';
+    canvas.style.height = Math.floor(viewport.height) + 'px';
+
+    await p.page.render({
+      canvasContext: canvas.getContext('2d'),
+      viewport,
+      transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null,
+    }).promise;
+
+    if (p.canvas) p.canvas.remove();
+    if (p.layer)  p.layer.remove();
+    const ph = p.el.querySelector('.placeholder');
+    if (ph) ph.remove();
+    p.el.insertBefore(canvas, p.el.firstChild);
+    p.canvas = canvas;
+
+    const layer = document.createElement('div');
+    layer.className = 'textLayer';
+    p.el.appendChild(layer);
+    await new pdfjsLib.TextLayer({
+      textContentSource: p.page.streamTextContent(),
+      container: layer,
+      viewport,
+    }).render();
+
+    bindTextLayerMouse(layer);
+    p.layer = layer;
+    p.state = 'done';
+  } catch (e){
+    console.error('page ' + p.n + ' render failed', e);
+    p.state = 'blank';
+  }
+
+  // the scale moved, or a clear arrived, while this pass was drawing
+  if (p.state === 'done' && (p.dirty || atScale !== scale)){
+    p.dirty = false;
+    resetPage(p);
+    renderPage(p);
+  } else {
+    p.dirty = false;
+  }
+}
+
+// Two thresholds: render what is close, throw away what is far.
+let ioNear, ioFar;
+function observeAll(){
+  ioNear = new IntersectionObserver((entries) => {
+    for (const e of entries){
+      if (!e.isIntersecting) continue;
+      const p = pages[+e.target.dataset.page - 1];
+      renderPage(p);
+    }
+  }, { root: viewer, rootMargin: '900px 0px' });
+
+  ioFar = new IntersectionObserver((entries) => {
+    for (const e of entries){
+      if (e.isIntersecting) continue;
+      const p = pages[+e.target.dataset.page - 1];
+      if (p.state === 'done') clearPage(p);
+    }
+  }, { root: viewer, rootMargin: '2600px 0px' });
+
+  for (const p of pages){ ioNear.observe(p.el); ioFar.observe(p.el); }
+}
+
+function refreshVisible(){
+  const top = viewer.scrollTop - 900, bot = viewer.scrollTop + viewer.clientHeight + 900;
+  for (const p of pages){
+    const a = p.el.offsetTop, b = a + p.el.offsetHeight;
+    if (b > top && a < bot) renderPage(p);
+  }
+}
+
+function gotoPage(n){
+  n = Math.min(pages.length, Math.max(1, n|0));
+  const p = pages[n-1];
+  if (!p) return;
+  viewer.scrollTop = p.el.offsetTop - 14;
+  p.el.classList.add('flash');
+  setTimeout(() => p.el.classList.remove('flash'), 900);
+}
+
+let scrollTimer = null;
+viewer.addEventListener('scroll', () => {
+  repositionPopup();
+  if (scrollTimer) return;
+  scrollTimer = setTimeout(() => {
+    scrollTimer = null;
+    const mid = viewer.scrollTop + viewer.clientHeight * 0.35;
+    let best = 1;
+    for (const p of pages){ if (p.el.offsetTop <= mid) best = p.n; else break; }
+    if (best !== currentPage){
+      currentPage = best;
+      if (document.activeElement !== $('pageInput')) $('pageInput').value = best;
+    }
+  }, 90);
+});
+
+$('btnPrev').onclick   = () => gotoPage(currentPage - 1);
+$('btnNext').onclick   = () => gotoPage(currentPage + 1);
+$('btnZoomIn').onclick = () => zoomBy(1.15);
+$('btnZoomOut').onclick= () => zoomBy(1 / 1.15);
+$('btnFit').onclick    = () => fitWidth();
+$('pageInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter'){ gotoPage(parseInt($('pageInput').value, 10)); $('pageInput').blur(); }
+});
+$('btnSide').onclick = () => {
+  document.body.classList.toggle('no-side');
+  $('btnSide').classList.toggle('on', !document.body.classList.contains('no-side'));
+  setTimeout(relayout, 60);
+};
+
+// The window can still be narrow when the page first loads, so "fit width"
+// has to keep tracking the width instead of being a one-shot measurement.
+function relayout(){
+  if (fitMode) fitWidth();
+  else refreshVisible();
+}
+
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(relayout, 180);
+});
+
+/* ---- sidebar drag-resize ---- */
+(() => {
+  const rz = $('resizer'), side = $('sidebar');
+  let dragging = false;
+  rz.addEventListener('mousedown', (e) => {
+    dragging = true; rz.classList.add('drag');
+    document.body.style.userSelect = 'none'; e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const w = Math.min(window.innerWidth * 0.6, Math.max(280, window.innerWidth - e.clientX));
+    side.style.flexBasis = w + 'px';
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false; rz.classList.remove('drag');
+    document.body.style.userSelect = '';
+    relayout();
+  });
+})();
+
+/* ======================= selection popup ======================= */
+
+const popup = $('popup');
+let selText = '';       // normalised text sent to the model
+let selRange = null;    // live range, used to keep the popup glued to it
+
+// PDF text arrives broken across spans and lines; stitch it back together
+// before it goes anywhere near the model.
+function normalize(s){
+  return s
+    .replace(/\u00AD/g, '')
+    .replace(/([A-Za-z])-\s*\n\s*([a-z])/g, '$1$2')
+    .replace(/\s*\n\s*/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function showPopupAt(rect){
+  popup.classList.add('show');
+  const pw = popup.offsetWidth, ph = popup.offsetHeight;
+  let left = rect.left + rect.width / 2 - pw / 2;
+  left = Math.min(window.innerWidth - pw - 10, Math.max(10, left));
+  let top = rect.top - ph - 9;
+  if (top < 8) top = Math.min(window.innerHeight - ph - 10, rect.bottom + 9);
+  popup.style.left = left + 'px';
+  popup.style.top  = top  + 'px';
+}
+
+function repositionPopup(){
+  if (!popup.classList.contains('show') || !selRange) return;
+  const r = selRange.getBoundingClientRect();
+  if (!r || (r.width === 0 && r.height === 0)) return;
+  showPopupAt(r);
+}
+
+function hidePopup(){
+  popup.classList.remove('show', 'expanded');
+  $('popOut').textContent = '';
+  $('popOut').className = '';
+  selRange = null;
+}
+
+document.addEventListener('mouseup', (e) => {
+  if (popup.contains(e.target)) return;
+  setTimeout(() => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount){ hidePopup(); return; }
+
+    const range = sel.getRangeAt(0);
+    if (!viewer.contains(range.commonAncestorContainer.nodeType === 1
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentElement)) { hidePopup(); return; }
+
+    const raw = sel.toString();
+    if (!raw.trim()){ hidePopup(); return; }
+
+    selText = normalize(raw);
+    selRange = range;
+    popup.classList.remove('expanded');
+    $('popOut').textContent = '';
+    $('popOut').className = '';
+    showPopupAt(range.getBoundingClientRect());
+  }, 10);
+});
+
+// clicking the popup must not wipe the selection underneath it
+popup.addEventListener('mousedown', (e) => e.preventDefault());
+
+document.addEventListener('mousedown', (e) => {
+  if (!popup.contains(e.target) && popup.classList.contains('expanded')) hidePopup();
+});
+
+$('btnClose').onclick = hidePopup;
+
+$('btnCopySel').onclick = () => { navigator.clipboard.writeText(selText); flashBtn($('btnCopySel'), '복사됨'); };
+$('btnCopyTr').onclick  = () => { navigator.clipboard.writeText($('popOut').textContent); flashBtn($('btnCopyTr'), '복사됨'); };
+
+function flashBtn(btn, label){
+  const old = btn.textContent;
+  btn.textContent = label;
+  setTimeout(() => { btn.textContent = old; }, 1100);
+}
+
+$('btnTranslate').onclick = async () => {
+  if (!selText) return;
+  popup.classList.add('expanded');
+  $('popSrc').textContent = selText.length > 300 ? selText.slice(0, 300) + '…' : selText;
+  const out = $('popOut');
+  out.className = 'dots';
+  out.textContent = '번역 중';
+  repositionPopup();
+
+  try {
+    const r = await fetch('/api/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: selText }),
+    });
+    const j = await r.json();
+    if (j.ok){ out.className = ''; out.textContent = j.text.trim(); }
+    else     { out.className = 'err'; out.textContent = '번역 실패\n' + (j.error || '알 수 없는 오류'); }
+  } catch (e){
+    out.className = 'err';
+    out.textContent = '서버에 연결하지 못했습니다.\n' + e.message;
+  }
+  repositionPopup();
+};
+
+$('btnAsk').onclick   = () => { attachQuote(selText); hidePopup(); };
+$('btnAskTr').onclick = () => { attachQuote(selText); hidePopup(); };
+
+/* ======================= chat ======================= */
+
+const chatLog = $('chatLog'), chatInput = $('chatInput'), btnSend = $('btnSend');
+const emptyHtml = chatLog.innerHTML;   // pristine "start here" pane, restored on new sessions
+let quoted = '';
+let busy = false;
+let appState = null;                   // /api/state: active paper id/title, import capability
+
+let sessionKey = localStorage.getItem('pr.session');
+if (!sessionKey){
+  sessionKey = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  localStorage.setItem('pr.session', sessionKey);
+}
+
+function newSession(){
+  sessionKey = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  localStorage.setItem('pr.session', sessionKey);
+  chatLog.innerHTML = emptyHtml;
+}
+
+/* model / thinking-depth pickers — translation stays fixed to Sonnet/medium
+   server-side; only the chat lets the user trade cost and speed for depth */
+const MODELS  = [
+  ['sonnet', 'Sonnet'],
+  ['opus',   'Opus'],
+  ['haiku',  'Haiku'],
+  ['fable',  'Fable'],
+];
+const EFFORTS = [
+  ['low',    '가볍게'],
+  ['medium', '보통'],
+  ['high',   '깊게'],
+  ['xhigh',  '아주 깊게'],
+  ['max',    '최대'],
+];
+
+function buildSelect(el, options, storeKey, fallback){
+  el.innerHTML = options.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+  el.value = localStorage.getItem(storeKey) || fallback;
+  if (!el.value) el.value = fallback;
+  el.addEventListener('change', () => localStorage.setItem(storeKey, el.value));
+}
+buildSelect($('selModel'),  MODELS,  'pr.model',  'sonnet');
+buildSelect($('selEffort'), EFFORTS, 'pr.effort', 'medium');
+
+function attachQuote(text){
+  quoted = text;
+  $('quoteText').textContent = text.length > 260 ? text.slice(0, 260) + '…' : text;
+  $('quoteBox').classList.add('show');
+  chatInput.focus();
+}
+$('quoteX').onclick = () => { quoted = ''; $('quoteBox').classList.remove('show'); };
+
+function esc(s){
+  return s.replace(/[&<>]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;' }[c]));
+}
+
+function inlineMd(s){
+  s = esc(s);
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // turn [p.12], [p.12, p.15] and [p.9-13] into clickable page jumps
+  s = s.replace(/\[([^\[\]\n]*p\.\s*\d[^\[\]\n]*)\]/g, (m, inner) => {
+    const linked = inner.replace(/p\.\s*(\d+)(\s*[-–~]\s*(\d+))?/g, (tok, from, _r, to) => {
+      const chip = (n, label) => `<a class="cite" data-page="${n}">${label}</a>`;
+      if (to) return chip(from, 'p.' + from) + '-' + chip(to, to);
+      return chip(from, tok);
+    });
+    return '[' + linked + ']';
+  });
+  return s;
+}
+
+function renderMd(src){
+  const fences = [];
+  src = src.replace(/```[a-zA-Z0-9]*\n?([\s\S]*?)```/g, (m, code) => {
+    fences.push(code); return '\uE000' + (fences.length - 1) + '\uE001';
+  });
+
+  let out = '', list = null;
+  const closeList = () => { if (list){ out += '</' + list + '>'; list = null; } };
+
+  for (const raw of src.split('\n')){
+    const line = raw.replace(/\s+$/, '');
+    const fence = line.trim().match(/^\uE000(\d+)\uE001$/);
+    if (fence){ closeList(); out += '<pre><code>' + esc(fences[+fence[1]]) + '</code></pre>'; continue; }
+    if (!line.trim()){ closeList(); continue; }
+
+    let m;
+    if ((m = line.match(/^(#{1,6})\s+(.*)$/))){
+      closeList();
+      const lvl = Math.min(6, m[1].length + 2);
+      out += `<h${lvl}>${inlineMd(m[2])}</h${lvl}>`; continue;
+    }
+    if ((m = line.match(/^\s*[-*+]\s+(.*)$/))){
+      if (list !== 'ul'){ closeList(); out += '<ul>'; list = 'ul'; }
+      out += '<li>' + inlineMd(m[1]) + '</li>'; continue;
+    }
+    if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))){
+      if (list !== 'ol'){ closeList(); out += '<ol>'; list = 'ol'; }
+      out += '<li>' + inlineMd(m[1]) + '</li>'; continue;
+    }
+    closeList();
+    out += '<p>' + inlineMd(line) + '</p>';
+  }
+  closeList();
+  return out;
+}
+
+function addMsg(role, text, isError){
+  const empty = $('chatEmpty');
+  if (empty) empty.remove();
+
+  const wrap = document.createElement('div');
+  wrap.className = 'msg ' + (isError ? 'err' : role === 'user' ? 'user' : 'bot');
+
+  const who = document.createElement('div');
+  who.className = 'who';
+  who.textContent = isError ? '오류' : role === 'user' ? '나' : 'Claude';
+  wrap.appendChild(who);
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  if (role === 'bot' && !isError) bubble.innerHTML = renderMd(text);
+  else bubble.textContent = text;
+  wrap.appendChild(bubble);
+
+  chatLog.appendChild(wrap);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  return wrap;
+}
+
+chatLog.addEventListener('click', (e) => {
+  const cite = e.target.closest('.cite');
+  if (cite) gotoPage(parseInt(cite.dataset.page, 10));
+  const ex = e.target.closest('.ex');
+  if (ex){ chatInput.value = ex.textContent; send(); }
+});
+
+async function send(){
+  if (busy) return;
+  const typed = chatInput.value.trim();
+  if (!typed && !quoted) return;
+
+  let message = typed;
+  if (quoted){
+    message = '다음은 논문에서 내가 선택한 부분이다:\n"""\n' + quoted + '\n"""\n\n' +
+              (typed || '이 부분을 설명해줘.');
+  }
+
+  addMsg('user', (quoted ? '“' + (quoted.length > 160 ? quoted.slice(0,160) + '…' : quoted) + '”\n\n' : '') + (typed || '이 부분을 설명해줘.'));
+  chatInput.value = '';
+  chatInput.style.height = 'auto';
+  quoted = ''; $('quoteBox').classList.remove('show');
+
+  busy = true; btnSend.disabled = true;
+  const pending = addMsg('bot', '생각하는 중');
+  pending.querySelector('.bubble').className = 'bubble dots';
+
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionKey, message,
+        model: $('selModel').value,
+        effort: $('selEffort').value,
+      }),
+    });
+    const j = await r.json();
+    pending.remove();
+    if (j.ok) addMsg('bot', j.text);
+    else      addMsg('bot', '답변 실패: ' + (j.error || '알 수 없는 오류'), true);
+  } catch (e){
+    pending.remove();
+    addMsg('bot', '서버에 연결하지 못했습니다.\n' + e.message, true);
+  } finally {
+    busy = false; btnSend.disabled = false;
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+}
+
+btnSend.onclick = send;
+chatInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
+});
+chatInput.addEventListener('input', () => {
+  chatInput.style.height = 'auto';
+  chatInput.style.height = Math.min(150, chatInput.scrollHeight) + 'px';
+});
+
+// A "new chat" is just a fresh key — the old session stays on disk and in the
+// 세션 dropdown; nothing server-side needs resetting.
+$('btnReset').onclick = () => newSession();
+
+/* ======================= sessions ======================= */
+
+const sessPanel = $('sessPanel');
+
+async function loadSessionIntoLog(key){
+  const j = await (await fetch('/api/session?key=' + encodeURIComponent(key))).json();
+  chatLog.innerHTML = '';
+  if (j.ok && j.turns && j.turns.length){
+    for (const t of j.turns) addMsg(t.role === 'assistant' ? 'bot' : 'user', t.text);
+  } else {
+    chatLog.innerHTML = emptyHtml;
+  }
+  chatLog.scrollTop = chatLog.scrollHeight;
+  return j;
+}
+
+// On boot: restore the stored session's transcript. A session that belongs to
+// a different paper than the active one starts fresh instead — reopening it
+// from the dropdown is the explicit way back (that also switches the paper).
+async function restoreSession(){
+  try {
+    const j = await (await fetch('/api/session?key=' + encodeURIComponent(sessionKey))).json();
+    if (!j.ok || !j.exists) return;
+    if (j.paperId && appState && appState.paper && j.paperId !== appState.paper.id){
+      newSession();
+      return;
+    }
+    if (j.turns && j.turns.length){
+      chatLog.innerHTML = '';
+      for (const t of j.turns) addMsg(t.role === 'assistant' ? 'bot' : 'user', t.text);
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+  } catch (e){}
+}
+
+async function openSessions(){
+  let list = [];
+  try {
+    const j = await (await fetch('/api/sessions')).json();
+    list = (j && j.sessions) || [];
+  } catch (e){}
+
+  sessPanel.innerHTML = '';
+  if (!list.length){
+    sessPanel.innerHTML = '<div class="listEmpty">저장된 세션이 없습니다.<br>질문을 보내면 자동으로 저장됩니다.</div>';
+  }
+  for (const s of list){
+    const item = document.createElement('div');
+    item.className = 'sessItem' + (s.key === sessionKey ? ' cur' : '');
+
+    const t = document.createElement('div'); t.className = 't';
+    const name = document.createElement('div'); name.className = 'name';
+    name.textContent = s.title || '(제목 없음)';
+    const sub = document.createElement('div'); sub.className = 'sub';
+    const d = s.updated ? new Date(s.updated) : null;
+    const when = d ? `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}` : '';
+    sub.textContent = `${when} · ${Math.floor((s.turns||0)/2)}문답 · ${s.paperTitle || ''}`;
+    t.appendChild(name); t.appendChild(sub);
+
+    const del = document.createElement('span');
+    del.className = 'del'; del.textContent = '×'; del.title = '세션 삭제';
+    del.onclick = async (e) => {
+      e.stopPropagation();
+      await fetch('/api/session/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: s.key }),
+      }).catch(() => {});
+      if (s.key === sessionKey) newSession();
+      openSessions();                       // re-render the list in place
+    };
+
+    item.appendChild(t); item.appendChild(del);
+    item.onclick = async () => {
+      sessPanel.classList.remove('show');
+      sessionKey = s.key;
+      localStorage.setItem('pr.session', s.key);
+      // a session from another paper switches the viewer to that paper too
+      if (s.paperId && appState && appState.paper && s.paperId !== appState.paper.id){
+        await fetch('/api/paper/activate', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: s.paperId }),
+        }).catch(() => {});
+        location.reload();
+        return;
+      }
+      await loadSessionIntoLog(s.key);
+    };
+    sessPanel.appendChild(item);
+  }
+  sessPanel.classList.add('show');
+}
+
+$('btnSessions').onclick = () => {
+  if (sessPanel.classList.contains('show')) sessPanel.classList.remove('show');
+  else openSessions();
+};
+
+/* ======================= papers ======================= */
+
+async function fetchState(){
+  try {
+    appState = await (await fetch('/api/state')).json();
+  } catch (e){ appState = null; }
+  if (appState && appState.paper){
+    $('docTitle').textContent = appState.paper.title;
+    $('docTitle').title = appState.paper.title;
+    document.title = appState.paper.title + ' — 논문 리더';
+  } else {
+    $('docTitle').textContent = '논문 리더 — 불러온 논문 없음';
+  }
+}
+
+function hasPaper(){ return !!(appState && appState.paper); }
+
+const paperMenu = $('paperMenu');
+
+async function openPaperMenu(){
+  let papers = [];
+  try {
+    const j = await (await fetch('/api/papers')).json();
+    papers = (j && j.papers) || [];
+  } catch (e){}
+
+  paperMenu.innerHTML = '';
+  for (const p of papers){
+    const el = document.createElement('div');
+    el.className = 'pItem' + (p.active ? ' cur' : '');
+    el.textContent = p.title;
+    el.title = p.title;
+    el.onclick = async () => {
+      paperMenu.classList.remove('show');
+      if (p.active) return;
+      await fetch('/api/paper/activate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: p.id }),
+      }).catch(() => {});
+      newSession();                         // new paper, fresh chat
+      location.reload();
+    };
+    paperMenu.appendChild(el);
+  }
+
+  const sep = document.createElement('div'); sep.className = 'pSep';
+  paperMenu.appendChild(sep);
+
+  const canImport = !appState || appState.canImport !== false;
+  const imp = document.createElement('div');
+  imp.className = 'pItem import' + (canImport ? '' : ' disabled');
+  imp.textContent = canImport ? 'PDF 가져오기…' : 'PDF 가져오기 (pdftotext 없음)';
+  imp.onclick = () => {
+    if (!canImport) return;
+    paperMenu.classList.remove('show');
+    $('pdfFile').click();
+  };
+  paperMenu.appendChild(imp);
+  paperMenu.classList.add('show');
+}
+
+$('btnPaper').onclick = () => {
+  if (paperMenu.classList.contains('show')) paperMenu.classList.remove('show');
+  else openPaperMenu();
+};
+
+$('pdfFile').addEventListener('change', async () => {
+  const f = $('pdfFile').files[0];
+  $('pdfFile').value = '';
+  if (!f) return;
+
+  const boot = $('boot');
+  boot.querySelector('.t').textContent = 'PDF를 가져오는 중… (텍스트 추출 포함, 잠시 걸립니다)';
+  boot.classList.remove('gone');
+  try {
+    const r = await fetch('/api/paper/import', {
+      method: 'POST',
+      headers: { 'X-File-Name': encodeURIComponent(f.name) },
+      body: f,
+    });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || '가져오기 실패');
+    newSession();                           // imported paper becomes active
+    location.reload();
+  } catch (e){
+    boot.classList.add('gone');
+    alert('PDF 가져오기 실패: ' + e.message);
+  }
+});
+
+// dropdowns close on any click outside them
+document.addEventListener('mousedown', (e) => {
+  if (sessPanel.classList.contains('show') &&
+      !sessPanel.contains(e.target) && e.target.id !== 'btnSessions'){
+    sessPanel.classList.remove('show');
+  }
+  if (paperMenu.classList.contains('show') &&
+      !paperMenu.contains(e.target) && e.target.id !== 'btnPaper'){
+    paperMenu.classList.remove('show');
+  }
+});
+
+/* ======================= boot ======================= */
+fetchState()
+  .then(async () => {
+    if (!hasPaper()){
+      // fresh install: nothing to render yet, point at the import menu
+      $('boot').innerHTML =
+        '<div class="t">불러온 논문이 없습니다.</div>' +
+        '<button id="bootImport" style="border:0;background:#2f6fed;color:#fff;' +
+        'padding:9px 18px;border-radius:9px;font:inherit;font-weight:600;cursor:pointer">PDF 가져오기</button>';
+      $('bootImport').onclick = () => $('pdfFile').click();
+      return;
+    }
+    await loadPdf();
+    await restoreSession();
+    $('boot').classList.add('gone');
+  })
+  .catch((e) => {
+    console.error(e);
+    $('boot').innerHTML = '<div class="t" style="color:#b4472c">PDF를 불러오지 못했습니다.<br>' + e.message + '</div>';
+  });
+</script>
+</body>
+</html>

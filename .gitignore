@@ -1,0 +1,6 @@
+# Your papers, extracted text and chat sessions stay on your machine.
+# The app recreates data/ on first run; import a PDF from the UI.
+data/
+
+# Runtime logs (contain local paths and your Windows account name)
+*.log
