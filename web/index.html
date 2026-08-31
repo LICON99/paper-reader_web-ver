@@ -99,6 +99,11 @@
   }
   .page.flash{outline:3px solid var(--accent);outline-offset:-3px}
 
+  /* pdf.js parks a 0x0 measurement canvas at the end of <body>; without this
+     rule (present in the official viewer CSS) its inline line box makes the
+     document ~22px scrollable, so any stray scroll clips the topbar */
+  .hiddenCanvasElement{position:absolute;top:0;left:0;width:0;height:0;display:none}
+
   /* pdf.js text layer — mirrors the official viewer stylesheet */
   .textLayer{
     position:absolute;inset:0;overflow:hidden;
@@ -1155,10 +1160,26 @@ async function transHighlight(pageNo, text){
       if (!first) first = els[i];
     }
   });
-  if (first) first.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  // scrollIntoView would also scroll every ancestor - including the document
+  // itself, which shoves the whole app up and clips the topbar. Scroll only
+  // the translation pane instead.
+  if (first){
+    const paneEl = $('transBody');
+    const fr = first.getBoundingClientRect();
+    const pr = paneEl.getBoundingClientRect();
+    const top = paneEl.scrollTop + (fr.top - pr.top) - (paneEl.clientHeight - fr.height) / 2;
+    paneEl.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  }
 }
 
 applySideMode();
+
+// The app fills 100vh and never scrolls as a document. Any document scroll is
+// an accident (scrollIntoView/focus bubbling past overflow:hidden) that clips
+// the topbar - snap straight back.
+window.addEventListener('scroll', () => {
+  if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+});
 
 /* ======================= chat ======================= */
 
