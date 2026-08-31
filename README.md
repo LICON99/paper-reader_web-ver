@@ -1,6 +1,6 @@
 # paper-reader_web-ver (Windows)
 
-논문 읽기 편한 프로그램입니다. **macOS판은 `macOS` 브랜치**에 있습니다.
+논문 읽기 프로그램입니다. **macOS판은 `macOS` 브랜치**에 있습니다.
 
 PDF 논문을 읽으면서 **드래그 번역**, **전체 번역 보기**, **논문 질문 채팅**을 쓸 수 있는 로컬 웹 앱.
 모든 AI 호출은 이 PC에 설치된 Claude Code CLI(`claude.exe`)를 통해 처리된다. 별도 API 키 불필요.
