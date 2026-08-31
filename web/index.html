@@ -145,6 +145,8 @@
      so where they overlap the colors mix on their own. */
   .quoteLayer{position:absolute;inset:0;z-index:1;pointer-events:none}
   .noteLayer{position:absolute;inset:0;z-index:3;pointer-events:none}
+  .origLayer{position:absolute;inset:0;z-index:1;pointer-events:none}
+  .origLayer .hlRect{background:rgba(255,152,0,.36)}
   .hlRect{position:absolute;border-radius:2px}
   .quoteLayer .hlRect{background:rgba(244,143,177,.34)}
   .noteLayer .hlRect{
@@ -537,9 +539,12 @@ async function loadPdf(){
     const noteLayer = document.createElement('div');
     noteLayer.className = 'noteLayer';
     el.appendChild(noteLayer);
+    const origLayer = document.createElement('div');   // transient orange: 번역본 드래그의 원문 위치
+    origLayer.className = 'origLayer';
+    el.appendChild(origLayer);
 
     viewer.appendChild(el);
-    pages.push({ n, el, base, page, quoteLayer, noteLayer, canvas:null, layer:null, state:'blank', dirty:false });
+    pages.push({ n, el, base, page, quoteLayer, noteLayer, origLayer, canvas:null, layer:null, state:'blank', dirty:false });
   }
 
   fitWidth();
@@ -899,12 +904,14 @@ document.addEventListener('mouseup', (e) => {
   if (popup.contains(e.target)) return;
   setTimeout(() => {
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.rangeCount){ hidePopup(); return; }
+    if (!sel || sel.isCollapsed || !sel.rangeCount){ hidePopup(); clearOrigHl(); return; }
 
     const range = sel.getRangeAt(0);
     if (!viewer.contains(range.commonAncestorContainer.nodeType === 1
         ? range.commonAncestorContainer
         : range.commonAncestorContainer.parentElement)) { hidePopup(); return; }
+
+    clearOrigHl();           // a fresh drag on the original replaces the orange
 
     const raw = sel.toString();
     if (!raw.trim()){ hidePopup(); return; }
@@ -1124,6 +1131,7 @@ function transMsg(html){
 }
 
 async function transShow(n){
+  if (transPage !== n) clearOrigHl();          // orange belongs to the old page
   transPage = n;
   $('transStat').textContent = 'p.' + n;
   if (!hasPaper()){ transMsg('불러온 논문이 없습니다.'); return; }
@@ -1357,6 +1365,80 @@ async function transHighlight(pageNo, text){
     paneEl.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
   }
 }
+
+/* ---- reverse direction: drag in the translation -> orange on the original.
+   Each .tsent/.tseg carries its source sentence in `title`; the matching text
+   is located in the page's text layer by a normalized character map, so the
+   broken spacing of PDF text doesn't matter. ---- */
+
+function clearOrigHl(){
+  for (const p of pages) p.origLayer.innerHTML = '';
+}
+
+function origHighlight(pageNo, srcTexts){
+  clearOrigHl();
+  const p = pages[pageNo - 1];
+  if (!p || !p.layer) return;
+
+  // normalized char map of the whole text layer: norm[i] <-> a DOM position
+  let norm = '';
+  const map = [];
+  for (const sp of p.layer.querySelectorAll('span')){
+    const tn = sp.firstChild;
+    if (!tn || tn.nodeType !== 3) continue;
+    const txt = tn.textContent;
+    for (let i = 0; i < txt.length; i++){
+      const c = txt[i].toLowerCase();
+      if (/[a-z0-9가-힣]/.test(c)){ norm += c; map.push({ tn, i }); }
+    }
+  }
+  if (!norm) return;
+
+  const pr = p.el.getBoundingClientRect();
+  if (pr.width < 1) return;
+  for (const src of srcTexts){
+    const key = tnorm(src);
+    if (key.length < 3) continue;
+    const at = norm.indexOf(key);
+    if (at < 0) continue;
+    const a = map[at], b = map[at + key.length - 1];
+    const range = document.createRange();
+    range.setStart(a.tn, a.i);
+    range.setEnd(b.tn, b.i + 1);
+    const rects = mergeRects([...range.getClientRects()]
+      .filter((r) => r.width > 1 && r.height > 1)
+      .map((r) => ({ x: (r.left - pr.left) / pr.width, y: (r.top - pr.top) / pr.height,
+                     w: r.width / pr.width, h: r.height / pr.height })));
+    for (const r of rects){
+      const d = document.createElement('div');
+      d.className = 'hlRect';
+      d.style.left   = (r.x * 100) + '%';
+      d.style.top    = (r.y * 100) + '%';
+      d.style.width  = (r.w * 100) + '%';
+      d.style.height = (r.h * 100) + '%';
+      p.origLayer.appendChild(d);
+    }
+  }
+}
+
+$('transBody').addEventListener('mouseup', () => {
+  setTimeout(() => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    if (!$('transBody').contains(range.commonAncestorContainer)) return;
+
+    const srcs = [];
+    $('transBody').querySelectorAll('.tseg').forEach((seg) => {
+      const sents = seg.querySelectorAll('.tsent');
+      const units = sents.length ? sents : [seg];
+      units.forEach((el) => {
+        if (el.title && range.intersectsNode(el)) srcs.push(el.title);
+      });
+    });
+    if (srcs.length) origHighlight(transPage, srcs);
+  }, 10);
+});
 
 applySideMode();
 
