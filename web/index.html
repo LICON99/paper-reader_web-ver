@@ -1315,18 +1315,27 @@ function tnorm(s){ return (s || '').toLowerCase().replace(/[^a-z0-9가-힣]+/g, 
 // a few characters), it sits inside the selection, the drag covers most of its
 // words, or most of the dragged words appear in it. Falls back to the whole
 // paragraph only when nothing matches.
-function sentScore(sent, selN, selLower, selWords){
+// Scoring must compare whole content words, never substrings: "prop" inside
+// "proportional" once lit up every equation, and the/and/are dragged along
+// entire neighbor paragraphs.
+const HL_STOP = new Set(['with','that','this','from','which','have','been','will','such','used',
+  'using','than','then','when','where','while','also','each','both','over','under','some','more',
+  'most','into','other','only','they','them','their','there','these','those','does','very','much',
+  'many','between','because','about','after','before','through','during','against','same','being',
+  'were','what','since','thus','hence','given','based','shown','follows','following','respectively']);
+function tokenWords(s){
+  return ((s || '').toLowerCase().match(/[a-z0-9가-힣]{4,}/g) || []).filter((w) => !HL_STOP.has(w));
+}
+
+function sentScore(sent, selN, selWordSet, selWords){
   const sN = tnorm(sent.src);
-  if (selN.length >= 4 && sN.includes(selN)) return 1;
-  if (sN.length >= 8 && selN.includes(sN)) return 1;
-  const words = sent.src.toLowerCase().match(/[a-z0-9가-힣]{3,}/g) || [];
-  if (words.length >= 2){
-    const cover = words.filter((w) => selLower.includes(w)).length / words.length;
-    if (cover >= 0.5) return cover;
-  }
-  if (selWords.length >= 2){
-    const src = sent.src.toLowerCase();
-    return 0.9 * (selWords.filter((w) => src.includes(w)).length / selWords.length);
+  if (selN.length >= 12 && sN.includes(selN)) return 1;   // drag sits inside this sentence
+  if (sN.length >= 12 && selN.includes(sN)) return 1;     // sentence sits inside the drag
+  // most of this sentence's content words were part of the drag
+  const sw = tokenWords(sent.src);
+  if (sw.length >= 3 && selWords.length >= 3){
+    const cover = sw.filter((w) => selWordSet.has(w)).length / sw.length;
+    if (cover >= 0.6) return cover;
   }
   return 0;
 }
@@ -1350,13 +1359,13 @@ async function transHighlight(pageNo, text){
   if (!segs || !segs.length) return;
 
   const selN = tnorm(text);
-  const selLower = text.toLowerCase();
-  const words = selLower.match(/[a-z0-9가-힣]{3,}/g) || [];
+  const selWords = tokenWords(text);
+  const selWordSet = new Set(selWords);
   const scores = segs.map((s) => {
-    if (selN.length >= 8 && tnorm(s.src).includes(selN)) return 1;
-    if (!words.length) return 0;
-    const src = s.src.toLowerCase();
-    return words.filter((w) => src.includes(w)).length / words.length;
+    if (selN.length >= 12 && tnorm(s.src).includes(selN)) return 1;
+    if (!selWords.length) return 0;
+    const srcSet = new Set(tokenWords(s.src));
+    return selWords.filter((w) => srcSet.has(w)).length / selWords.length;
   });
 
   const body = $('transBody');
@@ -1402,13 +1411,13 @@ async function transHighlight(pageNo, text){
       let hit = false;
       sents.forEach((p, k) => {
         const sp = spanMap[k];
-        if (sp && sentScore(p, selN, selLower, words) >= 0.5){
+        if (sp && sentScore(p, selN, selWordSet, selWords) >= 0.5){
           sp.classList.add('hl');
           if (!first) first = sp;
           hit = true;
         }
       });
-      if (!hit && words.length >= 3 && best >= 0.3 && scores[i] >= Math.max(0.5, best * 0.9)){
+      if (!hit && selWords.length >= 3 && best >= 0.3 && scores[i] >= Math.max(0.5, best * 0.9)){
         el.classList.add('hl');               // no sentence stood out - whole paragraph
         if (!first) first = el;
       }
