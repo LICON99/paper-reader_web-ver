@@ -4,3 +4,6 @@ data/
 
 # Runtime logs (contain local paths and your Windows account name)
 *.log
+
+# Python bytecode from server.py
+__pycache__/

@@ -1,9 +1,4 @@
 * text=auto eol=lf
 
-# Windows needs CRLF in the launcher; PowerShell is happy either way but keeps
-# CRLF so the file opens cleanly in Notepad.
-*.bat text eol=crlf
-*.ps1 text eol=crlf
-
 # Vendored pdf.js build - ship byte-for-byte as downloaded.
 vendor/** -text
