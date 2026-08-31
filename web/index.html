@@ -806,6 +806,7 @@ function hidePopup(){
   $('popOut').textContent = '';
   $('popOut').className = '';
   selRange = null;
+  transClearHl();          // the selection is gone - so is its highlight
 }
 
 document.addEventListener('mouseup', (e) => {
@@ -1070,9 +1071,21 @@ function sentScore(sent, selN, selLower, selWords){
   return 0;
 }
 
+// Bumping hlGen invalidates any highlight still being computed, so a drag
+// that is dismissed while the pane is loading can't paint afterwards.
+let hlGen = 0;
+
+function transClearHl(){
+  hlGen++;
+  const body = $('transBody');
+  if (body) body.querySelectorAll('.tseg.hl, .tsent.hl').forEach((el) => el.classList.remove('hl'));
+}
+
 async function transHighlight(pageNo, text){
   if (!transOn()) return;
+  const gen = hlGen;
   if (transPage !== pageNo) await transShow(pageNo);
+  if (gen !== hlGen) return;               // selection was dismissed meanwhile
   const segs = transCache[pageNo];
   if (!segs || !segs.length) return;
 
