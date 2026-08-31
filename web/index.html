@@ -1050,16 +1050,24 @@ function transRender(n){
 // then word-overlap scoring (PDF selections never match char-for-char).
 function tnorm(s){ return (s || '').toLowerCase().replace(/[^a-z0-9가-힣]+/g, ''); }
 
-// A sentence matches when the selection sits inside it, it sits inside the
-// selection, or the selection covers most of its words (a drag that ends
-// mid-sentence). Falls back to the whole paragraph if nothing matches.
-function sentScore(sent, selN, selLower){
+// A sentence matches when the selection sits inside it (even a short drag of
+// a few characters), it sits inside the selection, the drag covers most of its
+// words, or most of the dragged words appear in it. Falls back to the whole
+// paragraph only when nothing matches.
+function sentScore(sent, selN, selLower, selWords){
   const sN = tnorm(sent.src);
-  if (selN.length >= 8 && sN.includes(selN)) return 1;
+  if (selN.length >= 4 && sN.includes(selN)) return 1;
   if (sN.length >= 8 && selN.includes(sN)) return 1;
   const words = sent.src.toLowerCase().match(/[a-z0-9가-힣]{3,}/g) || [];
-  if (words.length < 2) return 0;
-  return words.filter((w) => selLower.includes(w)).length / words.length;
+  if (words.length >= 2){
+    const cover = words.filter((w) => selLower.includes(w)).length / words.length;
+    if (cover >= 0.5) return cover;
+  }
+  if (selWords.length >= 2){
+    const src = sent.src.toLowerCase();
+    return 0.9 * (selWords.filter((w) => src.includes(w)).length / selWords.length);
+  }
+  return 0;
 }
 
 async function transHighlight(pageNo, text){
@@ -1093,7 +1101,7 @@ async function transHighlight(pageNo, text){
     let hit = false;
     if (sents.length > 1 && spans.length === sents.length){
       sents.forEach((p, k) => {
-        if (sentScore(p, selN, selLower) >= 0.5){
+        if (sentScore(p, selN, selLower, words) >= 0.5){
           spans[k].classList.add('hl');
           if (!first) first = spans[k];
           hit = true;
