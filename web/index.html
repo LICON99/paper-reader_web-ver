@@ -682,6 +682,34 @@ function gotoPage(n){
   setTimeout(() => p.el.classList.remove('flash'), 900);
 }
 
+// Reading position survives reloads: stored per paper as page + fraction
+// inside that page, so it lands right even if the zoom or window changed.
+function scrollStoreKey(){
+  return (appState && appState.paper) ? 'pr.scroll.' + appState.paper.id : '';
+}
+
+function saveScrollPos(){
+  const key = scrollStoreKey();
+  if (!key || !pages.length) return;
+  const p = pages[currentPage - 1];
+  if (!p || !p.el.offsetHeight) return;
+  const frac = (viewer.scrollTop - p.el.offsetTop) / p.el.offsetHeight;
+  localStorage.setItem(key, JSON.stringify({ page: currentPage, frac }));
+}
+
+function restoreScrollPos(){
+  const key = scrollStoreKey();
+  if (!key) return;
+  try {
+    const s = JSON.parse(localStorage.getItem(key) || 'null');
+    const p = s && pages[s.page - 1];
+    if (!p) return;
+    viewer.scrollTop = p.el.offsetTop + (Number(s.frac) || 0) * p.el.offsetHeight;
+    currentPage = s.page;
+    $('pageInput').value = s.page;
+  } catch (e){}
+}
+
 let scrollTimer = null;
 viewer.addEventListener('scroll', () => {
   repositionPopup();
@@ -696,6 +724,7 @@ viewer.addEventListener('scroll', () => {
       if (document.activeElement !== $('pageInput')) $('pageInput').value = best;
       if (transOn() && transPage !== transTarget()) transShow(transTarget());
     }
+    saveScrollPos();
   }, 90);
 });
 
@@ -1616,6 +1645,7 @@ fetchState()
       return;
     }
     await loadPdf();
+    restoreScrollPos();
     await restoreSession();
     if (transOn()) transShow(transTarget());
     $('boot').classList.add('gone');
