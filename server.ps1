@@ -172,6 +172,19 @@ function Find-Pdftotext {
 }
 $Pdftotext = Find-Pdftotext
 
+# CLI generations differ: older builds have --safe-mode, newer ones dropped it
+# and added --setting-sources (which keeps the user's personal CLAUDE.md rules
+# out of app calls). Probe once so either generation works unchanged.
+$claudeHelp = ''
+try { $claudeHelp = (& $ClaudeExe --help 2>&1 | Out-String) } catch { }
+$SupportsSafeMode       = ($claudeHelp -match '--safe-mode')
+$SupportsSettingSources = ($claudeHelp -match '--setting-sources')
+
+$ClaudeFlagsPre = '-p'
+if ($SupportsSafeMode) { $ClaudeFlagsPre += ' --safe-mode' }
+$ClaudeFlagsPost = '--tools "" --no-session-persistence --output-format json'
+if ($SupportsSettingSources) { $ClaudeFlagsPost += ' --setting-sources ""' }
+
 
 # --- paper library ---------------------------------------------------------
 # data\papers\<id>\{paper.pdf, paper.txt, meta.json}; data\active.json points
@@ -237,18 +250,235 @@ if (-not $entry) {
 }
 
 
+# --- whole-paper translation job (runs in its own runspace) ----------------
+# One page = one claude call. Sentences are sent as ASCII-safe U+27E6/27E7
+# bracket markers (built from char codes - this file must stay ASCII) and the
+# result lands in trans.json page by page, so an interrupted job resumes.
+# Format matches the macOS server: {v, pages: {"N": [{src, ko, sents}]}}.
+$TransJobScript = {
+    param($State, $PaperId)
+
+    function Write-Log {
+        param([string]$Message)
+        try {
+            $line = '[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'), $Message
+            [IO.File]::AppendAllText($State.LogPath, $line + "`r`n", [Text.Encoding]::UTF8)
+        } catch { }
+    }
+
+    function Invoke-Claude {
+        param([string]$Prompt, [int]$TimeoutSec = 300, [string]$Model = 'sonnet', [string]$Effort = 'medium')
+        $psi = New-Object Diagnostics.ProcessStartInfo
+        $psi.FileName               = $State.ClaudeExe
+        $psi.Arguments              = $State.ClaudeFlagsPre + " --model $Model --effort $Effort " + $State.ClaudeFlagsPost
+        $psi.WorkingDirectory       = $State.Root
+        $psi.UseShellExecute        = $false
+        $psi.CreateNoWindow         = $true
+        $psi.RedirectStandardInput  = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+        $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+        $psi.StandardErrorEncoding  = [Text.Encoding]::UTF8
+        $proc = New-Object Diagnostics.Process
+        $proc.StartInfo = $psi
+        [void]$proc.Start()
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        $bytes = [Text.Encoding]::UTF8.GetBytes($Prompt)
+        $proc.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+        $proc.StandardInput.BaseStream.Flush()
+        $proc.StandardInput.Close()
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            try { $proc.Kill() } catch { }
+            return @{ ok = $false; error = "claude timed out after ${TimeoutSec}s" }
+        }
+        $raw = $outTask.Result
+        $i = $raw.IndexOf('{'); $j = $raw.LastIndexOf('}')
+        if ($i -lt 0 -or $j -le $i) {
+            $msg = $errTask.Result
+            if (-not $msg) { $msg = 'claude returned no output' }
+            return @{ ok = $false; error = ([string]$msg).Trim() }
+        }
+        try { $json = $raw.Substring($i, $j - $i + 1) | ConvertFrom-Json }
+        catch { return @{ ok = $false; error = 'could not parse claude output' } }
+        if ($json.is_error -or $json.subtype -ne 'success') {
+            $detail = $json.result
+            if (-not $detail) { $detail = $json.subtype }
+            return @{ ok = $false; error = [string]$detail }
+        }
+        return @{ ok = $true; text = [string]$json.result }
+    }
+
+    # dots that do not end a sentence (abbreviations, initials, decimals) are
+    # masked with \x01 before splitting and restored afterwards
+    function Split-Sentences {
+        param([string]$Paragraph)
+        $t = ((($Paragraph -split '\s+') | Where-Object { $_ }) -join ' ')
+        if (-not $t) { return @() }
+        $s = [string][char]1
+        $evAll  = { param($m) $m.Value.Replace('.', $s) }.GetNewClosure()
+        $evGrp  = { param($m) $m.Groups[1].Value + $s }.GetNewClosure()
+        $t = [regex]::Replace($t, '\b(?:e\.g|i\.e|et al|etc|cf|vs|viz|resp|ca|approx|Fig|Figs|Eq|Eqs|Ref|Refs|Sec|Secs|Tab|Tabs|Vol|No|pp|Dr|Mr|Ms|Prof|St)\.', $evAll)
+        $t = [regex]::Replace($t, '\b([A-Z])\.', $evGrp)
+        $t = [regex]::Replace($t, '(\d)\.(?=\d)', $evGrp)
+        $parts = [regex]::Split($t, '(?<=[.!?])\s+(?=[A-Z0-9"''(\[])')
+        return @($parts | Where-Object { $_.Trim() } | ForEach-Object { $_.Replace($s, '.') })
+    }
+
+    function Invoke-TranslatePage {
+        param([string]$Title, $Paras)
+        $L = [string][char]0x27E6
+        $R = [string][char]0x27E7
+        $lines = New-Object Collections.ArrayList
+        $count = 0
+        for ($i = 0; $i -lt $Paras.Count; $i++) {
+            $sents = @($Paras[$i])
+            for ($k = 0; $k -lt $sents.Count; $k++) {
+                [void]$lines.Add($L + ($i + 1) + '.' + ($k + 1) + $R + ' ' + $sents[$k])
+                $count++
+            }
+        }
+        $prompt = $State.TransPageTpl.Replace('{{PAPER_TITLE}}', $Title).Replace('{{COUNT}}', "$count").Replace('{{SEGMENTS}}', (($lines.ToArray()) -join "`n"))
+        $res = Invoke-Claude $prompt 240 'opus' 'medium'
+        if (-not $res.ok) { return @{ ok = $false; error = $res.error } }
+
+        $parts = [regex]::Split([string]$res.text, '\u27E6(\d+)\.(\d+)\u27E7')
+        $out = @{}
+        for ($j = 1; $j -le $parts.Length - 3; $j += 3) {
+            $out[($parts[$j] + '.' + $parts[$j + 1])] = $parts[$j + 2].Trim()
+        }
+        $segs = New-Object Collections.ArrayList
+        for ($i = 0; $i -lt $Paras.Count; $i++) {
+            $sents = @($Paras[$i])
+            $pairs = New-Object Collections.ArrayList
+            for ($k = 0; $k -lt $sents.Count; $k++) {
+                $key = ('' + ($i + 1) + '.' + ($k + 1))
+                if (-not $out.ContainsKey($key)) {
+                    return @{ ok = $false; error = ('model returned {0}/{1} sentences' -f $out.Count, $count) }
+                }
+                [void]$pairs.Add(@{ src = $sents[$k]; ko = $out[$key] })
+            }
+            $kos = @($pairs | ForEach-Object { $_.ko })
+            [void]$segs.Add(@{ src = ($sents -join ' '); ko = ($kos -join ' '); sents = $pairs.ToArray() })
+        }
+        return @{ ok = $true; segs = $segs.ToArray() }
+    }
+
+    # ---- main ----
+    $job = $State.TransJobs[$PaperId]
+    $dir = Join-Path $State.PapersDir $PaperId
+    $txtPath = Join-Path $dir 'paper.txt'
+    if (-not (Test-Path $txtPath)) {
+        $job.status = 'error'; $job.error = 'paper not found'
+        return
+    }
+
+    $title = $PaperId
+    $metaPath = Join-Path $dir 'meta.json'
+    if (Test-Path $metaPath) {
+        try {
+            $m = [IO.File]::ReadAllText($metaPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            if ($m.title) { $title = [string]$m.title }
+        } catch { }
+    }
+
+    $blocks = @{}
+    $cur = 0
+    $buf = New-Object Collections.ArrayList
+    foreach ($line in [IO.File]::ReadAllLines($txtPath, [Text.Encoding]::UTF8)) {
+        $mk = [regex]::Match($line, '^===== \[p\.(\d+)\] =====$')
+        if ($mk.Success) {
+            if ($cur -gt 0) { $blocks[$cur] = ((($buf.ToArray()) -join "`n")).Trim() }
+            $cur = [int]$mk.Groups[1].Value
+            [void]$buf.Clear()
+        } elseif ($cur -gt 0) {
+            [void]$buf.Add($line)
+        }
+    }
+    if ($cur -gt 0) { $blocks[$cur] = ((($buf.ToArray()) -join "`n")).Trim() }
+
+    $tp = Join-Path $dir 'trans.json'
+    $donePages = @{}
+    if (Test-Path $tp) {
+        try {
+            $old = [IO.File]::ReadAllText($tp, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            foreach ($prop in $old.pages.PSObject.Properties) { $donePages[$prop.Name] = $true }
+        } catch { }
+    }
+
+    $todo = @($blocks.Keys | Sort-Object | Where-Object { -not $donePages.ContainsKey("$_") })
+    $job.total = $blocks.Count
+    $job.done = $donePages.Count
+    Write-Log ('translation job start: {0}, {1}/{2} pages to go' -f $PaperId, $todo.Count, $blocks.Count)
+
+    $errors = New-Object Collections.ArrayList
+    $successes = 0
+    foreach ($n in $todo) {
+        $paras = New-Object Collections.ArrayList
+        foreach ($p in [regex]::Split($blocks[$n], '\n\s*\n')) {
+            if ($p.Trim()) {
+                $sents = @(Split-Sentences $p)
+                if ($sents.Count -gt 0) { [void]$paras.Add($sents) }
+            }
+        }
+
+        if ($paras.Count -eq 0) {
+            $segs = @()
+        } else {
+            $res = Invoke-TranslatePage $title $paras
+            if (-not $res.ok) {
+                [void]$errors.Add(('p.{0}: {1}' -f $n, $res.error))
+                Write-Log ('translation failed {0} p.{1}: {2}' -f $PaperId, $n, $res.error)
+                # every early call failing the same way (usually auth) - stop
+                # burning through the rest of the paper
+                if ($successes -eq 0 -and $errors.Count -ge 3) { break }
+                continue
+            }
+            $segs = $res.segs
+            $successes++
+        }
+
+        $tj = $State.TransJobs
+        [System.Threading.Monitor]::Enter($tj.SyncRoot)
+        try {
+            if (-not (Test-Path $dir)) { $tj.Remove($PaperId); return }   # deleted mid-job
+            $pagesTable = @{}
+            if (Test-Path $tp) {
+                try {
+                    $old = [IO.File]::ReadAllText($tp, [Text.Encoding]::UTF8) | ConvertFrom-Json
+                    foreach ($prop in $old.pages.PSObject.Properties) { $pagesTable[$prop.Name] = $prop.Value }
+                } catch { }
+            }
+            $pagesTable["$n"] = $segs
+            $doc = @{ v = 1; pages = $pagesTable }
+            [IO.File]::WriteAllText($tp, (ConvertTo-Json $doc -Depth 12 -Compress), (New-Object Text.UTF8Encoding($false)))
+            $job.done = $pagesTable.Count
+        } finally { [System.Threading.Monitor]::Exit($tj.SyncRoot) }
+    }
+
+    if ($errors.Count -gt 0) { $job.status = 'error'; $job.error = [string]$errors[0] }
+    else { $job.status = 'done' }
+    Write-Log ('translation job end: {0}, +{1} pages, {2} errors' -f $PaperId, $successes, $errors.Count)
+}
+
+
 # --- shared state across worker threads ------------------------------------
 $State = [hashtable]::Synchronized(@{
     Root         = $Root
     ClaudeExe    = $ClaudeExe
+    ClaudeFlagsPre  = $ClaudeFlagsPre
+    ClaudeFlagsPost = $ClaudeFlagsPost
     Pdftotext    = $Pdftotext
     PapersDir    = $PapersDir
     SessionsDir  = $SessionsDir
     ActiveFile   = $ActiveFile
     TranslateTpl = $Prompts.translate
+    TransPageTpl = $Prompts.translate_page
     ChatSystem   = $Prompts.chat_system
     ChatHistHdr  = $Prompts.chat_turn_header
     ChatQHdr     = $Prompts.chat_question_header
+    TransJobs    = [hashtable]::Synchronized(@{})
+    TransJobScript = $TransJobScript.ToString()
     Active       = [hashtable]::Synchronized(@{
         Id = $entry.Id; Title = $entry.Title; PdfPath = $entry.PdfPath; Text = $paperText
     })
@@ -325,7 +555,7 @@ $WorkerScript = {
 
         $psi = New-Object Diagnostics.ProcessStartInfo
         $psi.FileName               = $State.ClaudeExe
-        $psi.Arguments              = "-p --safe-mode --model $Model --effort $Effort --tools `"`" --no-session-persistence --output-format json"
+        $psi.Arguments              = $State.ClaudeFlagsPre + " --model $Model --effort $Effort " + $State.ClaudeFlagsPost
         $psi.WorkingDirectory       = $State.Root
         $psi.UseShellExecute        = $false
         $psi.CreateNoWindow         = $true
@@ -526,6 +756,90 @@ $WorkerScript = {
         return $ms.ToArray()
     }
 
+    # --- whole-paper translation: job control + status ----------------------
+    function Get-TransStatus {
+        param([string]$Id)
+        $tj = $State.TransJobs
+        [System.Threading.Monitor]::Enter($tj.SyncRoot)
+        try {
+            if ($tj.ContainsKey($Id)) {
+                $j = $tj[$Id]
+                return @{ status = [string]$j.status; done = [int]$j.done; total = [int]$j.total; error = [string]$j.error }
+            }
+        } finally { [System.Threading.Monitor]::Exit($tj.SyncRoot) }
+
+        $total = 0; $done = 0
+        $txt = Join-Path (Join-Path $State.PapersDir $Id) 'paper.txt'
+        if (Test-Path $txt) {
+            $total = ([regex]::Matches([IO.File]::ReadAllText($txt, [Text.Encoding]::UTF8), '(?m)^===== \[p\.\d+\] =====$')).Count
+        }
+        $tp = Join-Path (Join-Path $State.PapersDir $Id) 'trans.json'
+        if (Test-Path $tp) {
+            try {
+                $j = [IO.File]::ReadAllText($tp, [Text.Encoding]::UTF8) | ConvertFrom-Json
+                $done = @($j.pages.PSObject.Properties).Count
+            } catch { }
+        }
+        $status = 'idle'
+        if ($total -gt 0 -and $done -ge $total) { $status = 'done' }
+        return @{ status = $status; done = $done; total = $total; error = '' }
+    }
+
+    function Start-TransJob {
+        param([string]$Id)
+        $tj = $State.TransJobs
+        [System.Threading.Monitor]::Enter($tj.SyncRoot)
+        try {
+            if ($tj.ContainsKey($Id) -and [string]$tj[$Id].status -eq 'running') {
+                $j = $tj[$Id]
+                return @{ status = 'running'; done = [int]$j.done; total = [int]$j.total; error = '' }
+            }
+            $tj[$Id] = [hashtable]::Synchronized(@{ status = 'running'; done = 0; total = 0; error = '' })
+        } finally { [System.Threading.Monitor]::Exit($tj.SyncRoot) }
+
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'MTA'
+        $rs.Open()
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($State.TransJobScript).AddArgument($State).AddArgument($Id)
+        [void]$ps.BeginInvoke()
+        # keep the runspace alive by parking the handles on the job entry
+        [System.Threading.Monitor]::Enter($tj.SyncRoot)
+        try { $tj[$Id]['_ps'] = $ps; $tj[$Id]['_rs'] = $rs } finally { [System.Threading.Monitor]::Exit($tj.SyncRoot) }
+        return @{ status = 'running'; done = 0; total = 0; error = '' }
+    }
+
+    # Removes a paper's folder; chats about it stay. Deleting the open paper
+    # falls back to whatever else is in the library.
+    function Remove-Paper {
+        param([string]$Id)
+        if ($Id -notmatch '^[A-Za-z0-9_-]{1,64}$') { return $false }
+        $dir = Join-Path $State.PapersDir $Id
+        if (-not (Test-Path (Join-Path $dir 'paper.pdf'))) { return $false }
+        Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+        $tj = $State.TransJobs
+        [System.Threading.Monitor]::Enter($tj.SyncRoot)
+        try { $tj.Remove($Id) } finally { [System.Threading.Monitor]::Exit($tj.SyncRoot) }
+
+        $a = $State.Active
+        $wasActive = $false
+        [System.Threading.Monitor]::Enter($a.SyncRoot)
+        try {
+            if ([string]$a.Id -eq $Id) {
+                $wasActive = $true
+                $a.Id = ''; $a.Title = ''; $a.PdfPath = ''; $a.Text = ''
+            }
+        } finally { [System.Threading.Monitor]::Exit($a.SyncRoot) }
+        if ($wasActive) {
+            Remove-Item $State.ActiveFile -Force -ErrorAction SilentlyContinue
+            foreach ($p in @(Get-PaperList)) {
+                if (Set-ActivePaper ([string]$p.id)) { break }
+            }
+        }
+        return $true
+    }
+
     # Saves the uploaded PDF under an ASCII-safe id, extracts page-marked text
     # with pdftotext, and switches the active paper to it. The original
     # (possibly Korean) filename only ever lands inside UTF-8 meta.json, never
@@ -643,7 +957,63 @@ $WorkerScript = {
                 if ($enc) { try { $name = [Uri]::UnescapeDataString($enc) } catch { } }
                 if (-not $name) { $name = [string]$req.QueryString['name'] }
                 $res = Import-Paper $bytes $name
-                if ($res.ok) { Send-Json $ctx $res } else { Send-Json $ctx $res 500 }
+                if ($res.ok) {
+                    [void](Start-TransJob ([string]$res.id))   # pre-translate in the background
+                    Send-Json $ctx $res
+                } else { Send-Json $ctx $res 500 }
+                continue
+            }
+
+            if ($path -eq '/api/translation/status' -and $method -eq 'GET') {
+                $pid_ = [string]$req.QueryString['id']
+                if ($pid_ -notmatch '^[A-Za-z0-9_-]{1,64}$') {
+                    Send-Json $ctx @{ ok = $false; error = 'bad paper id' } 400
+                    continue
+                }
+                $st = Get-TransStatus $pid_
+                Send-Json $ctx @{ ok = $true; status = $st.status; done = $st.done; total = $st.total; error = $st.error }
+                continue
+            }
+
+            if ($path -eq '/api/translation/page' -and $method -eq 'GET') {
+                $pid_ = [string]$req.QueryString['id']
+                $page = 0
+                [void][int]::TryParse([string]$req.QueryString['page'], [ref]$page)
+                if ($pid_ -notmatch '^[A-Za-z0-9_-]{1,64}$' -or $page -lt 1) {
+                    Send-Json $ctx @{ ok = $false; error = 'bad request' } 400
+                    continue
+                }
+                $segs = $null
+                $tp = Join-Path (Join-Path $State.PapersDir $pid_) 'trans.json'
+                if (Test-Path $tp) {
+                    try {
+                        $j = [IO.File]::ReadAllText($tp, [Text.Encoding]::UTF8) | ConvertFrom-Json
+                        $prop = $j.pages.PSObject.Properties["$page"]
+                        if ($prop) { $segs = $prop.Value }
+                    } catch { }
+                }
+                if ($null -ne $segs) { Send-Json $ctx @{ ok = $true; exists = $true; segs = @($segs) } }
+                else { Send-Json $ctx @{ ok = $true; exists = $false; segs = @() } }
+                continue
+            }
+
+            if ($path -eq '/api/translation/start' -and $method -eq 'POST') {
+                $body = Read-Body $ctx | ConvertFrom-Json
+                $pid_ = [string]$body.id
+                if ($pid_ -notmatch '^[A-Za-z0-9_-]{1,64}$' -or
+                    -not (Test-Path (Join-Path (Join-Path $State.PapersDir $pid_) 'paper.txt'))) {
+                    Send-Json $ctx @{ ok = $false; error = 'unknown paper id' } 400
+                    continue
+                }
+                $st = Start-TransJob $pid_
+                Send-Json $ctx @{ ok = $true; status = $st.status; done = $st.done; total = $st.total; error = $st.error }
+                continue
+            }
+
+            if ($path -eq '/api/paper/delete' -and $method -eq 'POST') {
+                $body = Read-Body $ctx | ConvertFrom-Json
+                if (Remove-Paper ([string]$body.id)) { Send-Json $ctx @{ ok = $true } }
+                else { Send-Json $ctx @{ ok = $false; error = 'unknown paper id' } 400 }
                 continue
             }
 
@@ -742,6 +1112,13 @@ $WorkerScript = {
                 }
                 if (-not [string]$State.Active.Id) {
                     Send-Json $ctx @{ ok = $false; error = '먼저 상단 [논문] 메뉴에서 PDF를 가져오세요.' } 400
+                    continue
+                }
+
+                # a tab that still shows another paper must not append turns here
+                $want = [string]$body.paperId
+                if ($want -and $want -ne [string]$State.Active.Id) {
+                    Send-Json $ctx @{ ok = $false; code = 'paper_mismatch'; error = 'active paper changed' } 409
                     continue
                 }
 
