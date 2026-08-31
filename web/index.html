@@ -1460,9 +1460,21 @@ function origHighlight(pageNo, srcTexts){
   for (const src of srcTexts){
     const key = tnorm(src);
     if (key.length < 3) continue;
-    const at = norm.indexOf(key);
+    let at = norm.indexOf(key);
+    let len = key.length;
+    // formulas render with different characters (ligatures, math glyphs) in
+    // the text layer than in the extraction, so a sentence containing one may
+    // never match whole - fall back to its longest matching prefix or suffix
+    if (at < 0){
+      for (let cut = Math.floor(key.length * 0.75); cut >= 12; cut = Math.floor(cut * 0.7)){
+        at = norm.indexOf(key.slice(0, cut));
+        if (at >= 0){ len = cut; break; }
+        const tailAt = norm.indexOf(key.slice(-cut));
+        if (tailAt >= 0){ at = tailAt; len = cut; break; }
+      }
+    }
     if (at < 0) continue;
-    const a = map[at], b = map[at + key.length - 1];
+    const a = map[at], b = map[at + len - 1];
     const range = document.createRange();
     range.setStart(a.tn, a.i);
     range.setEnd(b.tn, b.i + 1);

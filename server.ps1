@@ -947,7 +947,11 @@ $WorkerScript = {
 
         $title = $id
         if ($OriginalName) {
-            try { $title = [IO.Path]::GetFileNameWithoutExtension($OriginalName) } catch { }
+            # only strip a real file extension - GetFileNameWithoutExtension on a
+            # name like "03. Kaufmann 2022 - ..." would treat everything after
+            # the first dot-number as the extension and truncate the title
+            $title = $OriginalName
+            if ($title -match '\.(pdf|PDF)$') { $title = $title.Substring(0, $title.Length - 4) }
             if (-not $title) { $title = $id }
         }
         [IO.File]::WriteAllText((Join-Path $dir 'meta.json'),
