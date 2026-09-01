@@ -143,12 +143,19 @@
      yellow lives in the translation pane; on the PDF itself:
      green = memo, pink = quote attached to a question. Both are translucent,
      so where they overlap the colors mix on their own. */
-  .quoteLayer{position:absolute;inset:0;z-index:1;pointer-events:none}
+  .quoteLayer{position:absolute;inset:0;z-index:3;pointer-events:none}
   .noteLayer{position:absolute;inset:0;z-index:3;pointer-events:none}
   .origLayer{position:absolute;inset:0;z-index:1;pointer-events:none}
   .origLayer .hlRect{background:rgba(255,152,0,.36)}
   .hlRect{position:absolute;border-radius:2px}
-  .quoteLayer .hlRect{background:rgba(244,143,177,.34)}
+  .quoteLayer .hlRect{
+    background:rgba(244,143,177,.34);
+    pointer-events:auto;cursor:pointer;
+    transition:background .15s;
+  }
+  .quoteLayer .hlRect:hover,.quoteLayer .hlRect.hov{background:rgba(240,98,146,.5)}
+  /* chat message briefly flashed after jumping to it from a pink mark */
+  .msg.flash{outline:2px solid var(--accent);outline-offset:4px;border-radius:8px}
   .noteLayer .hlRect{
     background:rgba(102,187,106,.30);
     pointer-events:auto;cursor:pointer;
@@ -1008,11 +1015,44 @@ function renderNotes(){
                                           .forEach((el) => el.classList.remove('hov'));
           d.onclick = (e) => openMemoEditor(note, { x: e.clientX, y: e.clientY });
         } else {
-          d.title = note.question ? '질문: ' + note.question : '';
+          d.title = note.question ? '질문: ' + note.question + '  (클릭하면 그 대화로 이동)' : '';
+          d.onmouseenter = () => document.querySelectorAll(`.quoteLayer .hlRect[data-note="${note.id}"]`)
+                                          .forEach((el) => el.classList.add('hov'));
+          d.onmouseleave = () => document.querySelectorAll(`.quoteLayer .hlRect[data-note="${note.id}"]`)
+                                          .forEach((el) => el.classList.remove('hov'));
+          d.onclick = () => openQuoteSession(note);
         }
         layer.appendChild(d);
       }
     }
+  }
+}
+
+// Clicking a pink mark reopens the conversation that asked about it, scrolled
+// to that very question.
+async function openQuoteSession(note){
+  if (!note.sessionKey) return;
+  document.body.classList.remove('no-side');
+  if (sideMode !== 'chat'){
+    sideMode = 'chat';
+    localStorage.setItem('pr.sideMode', 'chat');
+  }
+  applySideMode();
+  setTimeout(relayout, 60);
+
+  if (sessionKey !== note.sessionKey){
+    sessionKey = note.sessionKey;
+    localStorage.setItem('pr.session', sessionKey);
+    await loadSessionIntoLog(sessionKey);
+  }
+
+  const key = (note.question || note.src || '').replace(/\s+/g, ' ').trim().slice(0, 30);
+  const target = [...chatLog.querySelectorAll('.msg')]
+    .find((m) => key && m.textContent.replace(/\s+/g, ' ').includes(key));
+  if (target){
+    chatLog.scrollTop = Math.max(0, target.offsetTop - chatLog.offsetTop - 10);
+    target.classList.add('flash');
+    setTimeout(() => target.classList.remove('flash'), 1600);
   }
 }
 
