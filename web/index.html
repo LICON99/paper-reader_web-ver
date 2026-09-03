@@ -70,6 +70,30 @@
 
   #main{flex:1 1 auto;display:flex;min-height:0}
 
+  /* ---------------- PDF outline (left sidebar) ---------------- */
+  #tocBar{
+    flex:0 0 236px;min-width:170px;background:var(--panel);
+    border-right:1px solid var(--line);
+    display:flex;flex-direction:column;min-height:0;
+  }
+  body.no-toc #tocBar{display:none}
+  #tocHead{
+    flex:0 0 auto;padding:11px 14px;font-size:12px;font-weight:700;
+    color:var(--ink-2);border-bottom:1px solid var(--line);
+    letter-spacing:.04em;
+  }
+  #tocList{flex:1 1 auto;overflow:auto;padding:7px 6px}
+  #tocList ::-webkit-scrollbar-thumb{border-color:var(--panel)}
+  .tocItem{
+    padding:5px 8px;border-radius:6px;cursor:pointer;
+    font-size:12.5px;color:var(--ink-2);line-height:1.45;
+  }
+  .tocItem:hover{background:#f0efec;color:var(--ink)}
+  .tocItem.cur{background:var(--accent-soft);color:var(--accent)}
+  .tocItem .pg{color:var(--ink-3);font-size:10.5px;margin-left:6px;white-space:nowrap}
+  .tocItem.dead{opacity:.5;cursor:default}
+  .tocEmpty{padding:14px 12px;color:var(--ink-3);font-size:12px;line-height:1.7}
+
   /* ---------------- pdf viewer ---------------- */
   #viewerWrap{flex:1 1 auto;min-width:0;position:relative;overflow:hidden}
   #viewer{
@@ -397,6 +421,9 @@
 
 <div id="app">
   <div id="topbar">
+    <div class="group">
+      <button id="btnToc" title="PDF 목차 열기/닫기">목차</button>
+    </div>
     <div id="docTitle">논문 리더</div>
     <div class="spacer"></div>
 
@@ -428,6 +455,10 @@
   </div>
 
   <div id="main">
+    <aside id="tocBar">
+      <div id="tocHead">목차</div>
+      <div id="tocList"></div>
+    </aside>
     <div id="viewerWrap"><div id="viewer"></div></div>
     <div id="resizer"></div>
 
@@ -556,6 +587,63 @@ async function loadPdf(){
 
   fitWidth();
   observeAll();
+  buildToc();                     // async, fills the left outline sidebar
+}
+
+/* ---------------- PDF outline sidebar ---------------- */
+
+let tocOpen = localStorage.getItem('pr.toc') === '1';
+
+function applyToc(){
+  document.body.classList.toggle('no-toc', !tocOpen);
+  $('btnToc').classList.toggle('on', tocOpen);
+}
+$('btnToc').onclick = () => {
+  tocOpen = !tocOpen;
+  localStorage.setItem('pr.toc', tocOpen ? '1' : '0');
+  applyToc();
+  setTimeout(relayout, 60);
+};
+applyToc();
+
+// Reads the PDF's embedded outline (bookmarks). Each entry resolves its
+// destination to a page number once, up front, so clicks are instant.
+async function buildToc(){
+  const list = $('tocList');
+  list.innerHTML = '';
+  let outline = null;
+  try { outline = await pdfDoc.getOutline(); } catch (e){}
+  if (!outline || !outline.length){
+    list.innerHTML = '<div class="tocEmpty">이 PDF에는 내장 목차가 없습니다.<br>' +
+      '(논문 PDF가 책갈피 없이 만들어진 경우입니다)</div>';
+    return;
+  }
+  const addItems = async (items, depth) => {
+    for (const it of items){
+      const el = document.createElement('div');
+      el.className = 'tocItem';
+      el.style.paddingLeft = (8 + depth * 14) + 'px';
+      el.textContent = it.title || '(제목 없음)';
+      let pageNo = 0;
+      try {
+        let dest = it.dest;
+        if (typeof dest === 'string') dest = await pdfDoc.getDestination(dest);
+        if (Array.isArray(dest) && dest[0]) pageNo = (await pdfDoc.getPageIndex(dest[0])) + 1;
+      } catch (e){}
+      if (pageNo){
+        const pg = document.createElement('span');
+        pg.className = 'pg';
+        pg.textContent = 'p.' + pageNo;
+        el.appendChild(pg);
+        el.onclick = () => gotoPage(pageNo);
+      } else {
+        el.classList.add('dead');
+      }
+      list.appendChild(el);
+      if (it.items && it.items.length) await addItems(it.items, depth + 1);
+    }
+  };
+  await addItems(outline, 0);
 }
 
 function applyGeometry(){
