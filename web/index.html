@@ -646,47 +646,52 @@ async function buildToc(){
 }
 
 // Papers without embedded bookmarks still get a usable outline: the
-// translation already sets section headings in bold (**II. 배경**), so walk
-// the translated pages and list those headings with their page numbers.
+// translation sets headings in bold, so its pages can lend Korean titles.
+// The skeleton, though, comes from /api/toc - section headings mined from the
+// original extracted text - which exists even before any translation runs.
 async function buildTocFromTranslation(list){
   const notice = '<div class="tocEmpty">이 PDF에는 내장 목차가 없습니다.</div>';
   if (!hasPaper()){ list.innerHTML = notice; return; }
-  const heads = [];
+
+  let toc = [];
   try {
-    for (let pg = 1; pg <= pages.length; pg++){
+    const j = await (await fetch('/api/toc')).json();
+    toc = (j && j.toc) || [];
+  } catch (e){}
+  if (!toc.length){
+    list.innerHTML = notice;
+    return;
+  }
+
+  // Korean titles from the translation, keyed by section number ("2.1") -
+  // only the pages that actually hold a heading are fetched
+  const koByNum = {};
+  for (const pg of [...new Set(toc.map((h) => h.page))]){
+    try {
       const j = await (await fetch('/api/translation/page?id=' +
         encodeURIComponent(appState.paper.id) + '&page=' + pg)).json();
       if (!j.ok || !j.exists) continue;
       for (const s of (j.segs || [])){
         const ko = (s.ko || '').trim();
-        // merge consecutive bold runs at the start ("**2.1.** **운동학**")
         const m = /^(?:\s*\*\*[^*]{1,80}\*\*)+/.exec(ko);
         if (!m) continue;
         let title = m[0].replace(/\*\*/g, ' ').replace(/\s+/g, ' ').trim();
-        // a bare number means the heading text follows unbolded - append it
         if (/^(?:[\d.]+|[IVXLC]+\.?|[A-Z]\.)$/.test(title)){
           const rest = ko.slice(m[0].length).split('\n')[0].trim();
           if (rest) title += ' ' + rest.slice(0, 50);
         }
-        if (title.length > 70) title = title.slice(0, 70) + '…';
-        heads.push({ title, page: pg });
+        const num = /^([\dIVXLC]+(?:\.\d+)*)\.?\s/.exec(title + ' ');
+        if (num) koByNum[num[1]] = title;
       }
-    }
-  } catch (e){}
-  if (!heads.length){
-    list.innerHTML = notice +
-      '<div class="tocEmpty">전체 번역이 준비되면 번역의 절 제목으로 목차를 만들어 드립니다.</div>';
-    return;
+    } catch (e){}                       // one bad page must not kill the rest
   }
-  for (const h of heads){
+
+  for (const h of toc){
     const el = document.createElement('div');
     el.className = 'tocItem';
-    // depth from the numbering: "2.1." one level in, "A." likewise
-    const num = /^([\d.]+)\s/.exec(h.title + ' ');
-    const depth = /^[A-Z]\./.test(h.title) ? 1
-      : num ? Math.max(0, (num[1].match(/\d+/g) || []).length - 1) : 0;
-    el.style.paddingLeft = (8 + Math.min(depth, 3) * 14) + 'px';
-    el.textContent = h.title;
+    el.style.paddingLeft = (8 + Math.min(h.depth || 0, 3) * 14) + 'px';
+    const num = /^([\dIVXLC]+(?:\.\d+)*)\.?\s/.exec(h.title + ' ');
+    el.textContent = (num && koByNum[num[1]]) ? koByNum[num[1]] : h.title;
     const pg = document.createElement('span');
     pg.className = 'pg';
     pg.textContent = 'p.' + h.page;

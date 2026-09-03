@@ -990,6 +990,36 @@ $WorkerScript = {
                 continue
             }
 
+            # Section headings mined from the extracted text of the active
+            # paper - the outline fallback for PDFs without bookmarks.
+            if ($path -eq '/api/toc' -and $method -eq 'GET') {
+                $items = New-Object Collections.ArrayList
+                $page = 0
+                foreach ($ln in (([string]$State.Active.Text) -split "`n")) {
+                    $l = $ln.Trim()
+                    if ($l -cmatch '^===== \[p\.(\d+)\]') { $page = [int]$Matches[1]; continue }
+                    if ($l.Length -lt 3 -or $l.Length -gt 70 -or $page -lt 1) { continue }
+                    if ($l -match '[^\x20-\x7E]') { continue }              # math glyphs, ligatures
+                    if ($l -match '[.,;:]$' -or $l -match '\d\s*$') { continue }
+                    if ((($l -split '\s+').Count) -gt 10) { continue }
+                    $isNum   = $l -cmatch '^\d+(\.\d+)*\.?\s+[A-Z]'
+                    $isRoman = $l -cmatch '^(?=[IVXLC]{1,6}\.)[IVXLC]+\.\s+[A-Z]'
+                    $isAlpha = $l -cmatch '^[A-Z]\.\s+[A-Z]'
+                    $isWord  = $l -cmatch '^(Abstract|References|Acknowledg\w*|Appendix\b.*|Nomenclature|Conclusions?|Introduction)$'
+                    if ($isNum -or $isRoman -or $isAlpha -or $isWord) {
+                        $depth = 0
+                        if ($isAlpha) { $depth = 1 }
+                        elseif ($isNum) {
+                            $num = ($l -split '\s+')[0]
+                            $depth = [Math]::Max(0, ([regex]::Matches($num, '\d+')).Count - 1)
+                        }
+                        [void]$items.Add(@{ title = $l; page = $page; depth = $depth })
+                    }
+                }
+                Send-Json $ctx @{ ok = $true; toc = @($items.ToArray()) }
+                continue
+            }
+
             if ($path -eq '/api/papers' -and $method -eq 'GET') {
                 Send-Json $ctx @{ ok = $true; papers = @(Get-PaperList) }
                 continue
