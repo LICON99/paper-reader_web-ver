@@ -893,7 +893,7 @@ $WorkerScript = {
     # (possibly Korean) filename only ever lands inside UTF-8 meta.json, never
     # on a command line - Korean paths through cmdline encoding broke before.
     function Import-Paper {
-        param([byte[]]$Bytes, [string]$OriginalName)
+        param([byte[]]$Bytes, [string]$OriginalName, [int]$PageCount = 0)
         if (-not $State.Pdftotext) {
             return @{ ok = $false; error = 'pdftotext not found (install Git for Windows)' }
         }
@@ -909,38 +909,64 @@ $WorkerScript = {
         [IO.File]::WriteAllBytes($pdf, $Bytes)
 
         $rawTxt = Join-Path $dir 'raw.txt'
-        $psi = New-Object Diagnostics.ProcessStartInfo
-        $psi.FileName               = $State.Pdftotext
-        $psi.Arguments              = '-enc UTF-8 "' + $pdf + '" "' + $rawTxt + '"'
-        $psi.UseShellExecute        = $false
-        $psi.CreateNoWindow         = $true
-        $psi.RedirectStandardError  = $true
-        $proc = New-Object Diagnostics.Process
-        $proc.StartInfo = $psi
-        [void]$proc.Start()
-        $errTask = $proc.StandardError.ReadToEndAsync()
-        if (-not $proc.WaitForExit(120000)) {
-            try { $proc.Kill() } catch { }
-            Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
-            return @{ ok = $false; error = 'pdftotext timed out' }
-        }
-        if ($proc.ExitCode -ne 0 -or -not (Test-Path $rawTxt)) {
-            $err = $errTask.Result
-            Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
-            return @{ ok = $false; error = ('text extraction failed: ' + ([string]$err).Trim()) }
+        $runPdftotext = {
+            param([string]$ExtraArgs)
+            $psi = New-Object Diagnostics.ProcessStartInfo
+            $psi.FileName               = $State.Pdftotext
+            $psi.Arguments              = '-enc UTF-8 ' + $ExtraArgs + ' "' + $pdf + '" "' + $rawTxt + '"'
+            $psi.UseShellExecute        = $false
+            $psi.CreateNoWindow         = $true
+            $psi.RedirectStandardError  = $true
+            $proc = New-Object Diagnostics.Process
+            $proc.StartInfo = $psi
+            [void]$proc.Start()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit(120000)) {
+                try { $proc.Kill() } catch { }
+                return 'pdftotext timed out'
+            }
+            if ($proc.ExitCode -ne 0 -or -not (Test-Path $rawTxt)) {
+                return ('text extraction failed: ' + ([string]$errTask.Result).Trim())
+            }
+            return $null
         }
 
-        $t = [IO.File]::ReadAllText($rawTxt, [Text.Encoding]::UTF8)
-        $pages = $t -split [string][char]12
         $sb = New-Object Text.StringBuilder
         $n = 0
-        for ($i = 0; $i -lt $pages.Count; $i++) {
-            $body = $pages[$i].Trim()
-            if ($body.Length -eq 0 -and $i -eq $pages.Count - 1) { continue }
-            $n++
-            [void]$sb.AppendLine('===== [p.' + $n + '] =====')
-            [void]$sb.AppendLine($body)
-            [void]$sb.AppendLine()
+        if ($PageCount -ge 1 -and $PageCount -le 2000) {
+            # The browser told us the real page count (pdf.js), so extract page
+            # by page. Splitting one big run on form-feeds is unreliable: some
+            # PDFs make pdftotext emit stray \f around formula blocks, which
+            # shifted every page number the app relies on.
+            for ($p = 1; $p -le $PageCount; $p++) {
+                $err = & $runPdftotext ('-f ' + $p + ' -l ' + $p)
+                if ($err) {
+                    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+                    return @{ ok = $false; error = $err }
+                }
+                $body = ([IO.File]::ReadAllText($rawTxt, [Text.Encoding]::UTF8)).Replace([string][char]12, "`n").Trim()
+                $n++
+                [void]$sb.AppendLine('===== [p.' + $n + '] =====')
+                [void]$sb.AppendLine($body)
+                [void]$sb.AppendLine()
+            }
+        } else {
+            # no page count available - old behavior, split on form-feeds
+            $err = & $runPdftotext ''
+            if ($err) {
+                Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+                return @{ ok = $false; error = $err }
+            }
+            $t = [IO.File]::ReadAllText($rawTxt, [Text.Encoding]::UTF8)
+            $pages = $t -split [string][char]12
+            for ($i = 0; $i -lt $pages.Count; $i++) {
+                $body = $pages[$i].Trim()
+                if ($body.Length -eq 0 -and $i -eq $pages.Count - 1) { continue }
+                $n++
+                [void]$sb.AppendLine('===== [p.' + $n + '] =====')
+                [void]$sb.AppendLine($body)
+                [void]$sb.AppendLine()
+            }
         }
         [IO.File]::WriteAllText((Join-Path $dir 'paper.txt'), $sb.ToString(), (New-Object Text.UTF8Encoding($false)))
         Remove-Item $rawTxt -Force -ErrorAction SilentlyContinue
@@ -1038,7 +1064,9 @@ $WorkerScript = {
                 $enc   = [string]$req.Headers['X-File-Name']
                 if ($enc) { try { $name = [Uri]::UnescapeDataString($enc) } catch { } }
                 if (-not $name) { $name = [string]$req.QueryString['name'] }
-                $res = Import-Paper $bytes $name
+                $pc = 0
+                [void][int]::TryParse([string]$req.Headers['X-Page-Count'], [ref]$pc)
+                $res = Import-Paper $bytes $name $pc
                 if ($res.ok) {
                     [void](Start-TransJob ([string]$res.id))   # pre-translate in the background
                     Send-Json $ctx $res

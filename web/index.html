@@ -2169,9 +2169,20 @@ $('pdfFile').addEventListener('change', async () => {
   boot.querySelector('.t').textContent = 'PDF를 가져오는 중… (텍스트 추출 포함, 잠시 걸립니다)';
   boot.classList.remove('gone');
   try {
+    // pdf.js knows the true page count; the server extracts page by page with
+    // it, since form-feed counting alone mislabels some PDFs' page numbers
+    let pageCount = 0;
+    try {
+      const probe = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise;
+      pageCount = probe.numPages;
+      probe.destroy();
+    } catch (e){}
     const r = await fetch('/api/paper/import', {
       method: 'POST',
-      headers: { 'X-File-Name': encodeURIComponent(f.name) },
+      headers: {
+        'X-File-Name': encodeURIComponent(f.name),
+        'X-Page-Count': String(pageCount),
+      },
       body: f,
     });
     const j = await r.json();
